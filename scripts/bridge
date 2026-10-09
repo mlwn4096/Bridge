@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Bridge's local command-line companion. No network connection or daemon needed."""
+import argparse
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import time
+import uuid
+
+parser = argparse.ArgumentParser(description='Control your paired phone through the installed Bridge app.')
+commands = parser.add_subparsers(dest='command', required=True)
+commands.add_parser('devices', help='Print paired device and current connection status as JSON')
+send = commands.add_parser('send', help='Queue up to 100 files or folders; use transfers to inspect completion')
+send.add_argument('files', nargs='+')
+clipboard = commands.add_parser('clipboard', help='Get last received text, or send text to phone')
+clipboard.add_argument('operation', choices=['get', 'set']); clipboard.add_argument('text', nargs='?')
+link = commands.add_parser('link', help='Send a web link without opening it automatically'); link.add_argument('url')
+commands.add_parser('ring', help='Request phone ringing')
+commands.add_parser('transfers', help='Print recent transfer states as JSON')
+for action in ('pause', 'resume', 'cancel'):
+    control = commands.add_parser(action, help=action.title() + ' an outgoing queued transfer')
+    control.add_argument('transfer_id')
+# Developer commands are explicit opt-in and restricted to authorized USB devices.
+for name in ('adb-devices', 'adb-info', 'adb-packages', 'adb-logcat', 'adb-list', 'adb-pull', 'adb-install', 'adb-screenshot'):
+    tool = commands.add_parser(name, help='Optional authorized USB developer tool')
+    tool.add_argument('--developer-tools', action='store_true', required=True, help='Explicitly opt in to developer tools')
+    if name != 'adb-devices': tool.add_argument('--serial', help='Authorized USB serial; required when multiple phones are connected')
+    if name in ('adb-list', 'adb-pull'): tool.add_argument('path')
+    if name == 'adb-pull': tool.add_argument('destination')
+    if name == 'adb-install':
+        tool.add_argument('apk')
+        tool.add_argument('--confirm-install', action='store_true', required=True, help='Approve installing or updating this APK')
+    if name == 'adb-screenshot': tool.add_argument('destination')
+args = parser.parse_args()
+def developer_executable(name):
+    choices = [pathlib.Path.home() / 'Library/Android/sdk/platform-tools' / name,
+               pathlib.Path('/opt/homebrew/bin') / name, pathlib.Path('/usr/local/bin') / name]
+    return next((str(path) for path in choices if path.is_file() and os.access(path, os.X_OK)), None)
+
+def developer_command():
+    adb = developer_executable('adb')
+    if not adb: sys.exit('Install Android platform-tools yourself. Bridge does not install dependencies or enable debugging.')
+    try:
+        listing = subprocess.run([adb, 'devices', '-l'], capture_output=True, text=True, timeout=15, check=True)
+        devices = []
+        for line in listing.stdout.splitlines():
+            fields = line.split()
+            if len(fields) > 2 and fields[1] == 'device' and any(x.startswith('usb:') for x in fields):
+                if fields[0].startswith('-'): continue
+                devices.append({'serial': fields[0], 'details': ' '.join(fields[2:])})
+        if args.command == 'adb-devices':
+            print(json.dumps({'devices': devices, 'transport': 'authorized USB only'}, indent=2)); return
+        serial = args.serial or (devices[0]['serial'] if len(devices) == 1 else None)
+        if not serial or not any(d['serial'] == serial for d in devices):
+            sys.exit('Choose one authorized USB device with --serial. Approve USB debugging on the phone first.')
+        command = {'adb-info': ['shell', 'getprop'], 'adb-packages': ['shell', 'pm', 'list', 'packages'],
+                   'adb-logcat': ['logcat', '-d', '-t', '500']} .get(args.command)
+        if args.command in ('adb-list', 'adb-pull'):
+            if not args.path.startswith('/sdcard/') or len(args.path) > 1024 or not re.fullmatch(r'[A-Za-z0-9/_.-]+', args.path) or '..' in args.path.split('/'):
+                sys.exit('Use a path under /sdcard/ containing letters, numbers, underscores, hyphens and periods; parent paths are forbidden.')
+            command = ['shell', 'ls', '-1', args.path]
+        if args.command in ('adb-pull', 'adb-screenshot'):
+            destination = pathlib.Path(args.destination).expanduser().absolute()
+            if destination.exists() or destination.is_symlink(): sys.exit('Destination already exists. Choose a new path; existing data is never overwritten.')
+            if args.command == 'adb-pull': command = ['pull', args.path, str(destination)]
+            else:
+                try:
+                    with destination.open('xb') as output:
+                        result = subprocess.run([adb, '-s', serial, 'exec-out', 'screencap', '-p'], stdout=output, stderr=subprocess.PIPE, timeout=15)
+                except (OSError, subprocess.TimeoutExpired):
+                    destination.unlink(missing_ok=True)
+                    raise
+                if result.returncode:
+                    destination.unlink(missing_ok=True)
+                    sys.exit(result.stderr.decode('utf-8', errors='replace')[:65536])
+                print(str(destination)); return
+        if args.command == 'adb-install':
+            apk = pathlib.Path(args.apk).expanduser().resolve()
+            if not apk.is_file() or apk.suffix.lower() != '.apk': sys.exit('Choose a regular APK file.')
+            command = ['install', '-r', str(apk)]
+        result = subprocess.run([adb, '-s', serial] + command, capture_output=True, text=True, timeout=120 if args.command in ('adb-install', 'adb-pull') else 15)
+        print((result.stdout + result.stderr)[:1048576])
+        if result.returncode: sys.exit(result.returncode)
+    except (OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
+        sys.exit(str(error))
+
+if args.command.startswith('adb-'):
+    developer_command()
+    sys.exit(0)
+request = {'created': time.time(), 'command': args.command}
+if args.command == 'send':
+    if not 1 <= len(args.files) <= 100: parser.error('Choose one to 100 files or folders')
+    paths = [pathlib.Path(p).expanduser().resolve() for p in args.files]
+    if any(not (p.is_file() or p.is_dir()) for p in paths): parser.error('Choose readable local files or folders')
+    request['files'] = list(map(str, paths))
+elif args.command == 'clipboard':
+    request['command'] = 'clipboard.' + args.operation
+    if args.operation == 'set':
+        request['text'] = args.text if args.text is not None else sys.stdin.read(32769)
+        if not request['text'] or len(request['text'].encode('utf-8')) > 32768: parser.error('Send 1 byte to 32 KB of text')
+elif args.command == 'link': request['text'] = args.url
+elif args.command in ('pause', 'resume', 'cancel'):
+    try: request['transferID'] = str(uuid.UUID(args.transfer_id)).upper()
+    except ValueError: parser.error('Enter a transfer ID from transfers')
+folder = pathlib.Path.home() / 'Library/Application Support/Bridge/Commands'
+folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+if folder.is_symlink() or folder.resolve() != folder:
+    sys.exit('Command directory and its parents must not be symlinks')
+if folder.stat().st_uid != os.getuid(): sys.exit('Command directory must belong to the current user')
+os.chmod(folder, 0o700)
+# Expire abandoned command/reply files; never retain clipboard input indefinitely.
+for stale in folder.glob('*.json'):
+    try:
+        if time.time() - stale.stat().st_mtime > 3600: stale.unlink()
+    except OSError: pass
+identifier = str(uuid.uuid4()).upper()
+source = folder / (identifier + '.json'); reply = folder / (identifier + '.result.json')
+fd = os.open(source, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, 'w') as output: json.dump(request, output)
+try:
+    opened = subprocess.run(['/usr/bin/open', '-g', 'bridge-app://command?request=' + identifier], capture_output=True, text=True)
+    if opened.returncode: sys.exit('Install Bridge in Applications and open it once before using the CLI.')
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if reply.exists():
+            result = json.loads(reply.read_text())
+            if args.command == 'clipboard' and args.operation == 'get' and result.get('ok'): print(result.get('text', ''))
+            else: print(json.dumps(result, indent=2))
+            sys.exit(0 if result.get('ok') else 1)
+        time.sleep(0.1)
+    sys.exit('Bridge did not respond. Open Bridge and retry; sensitive text may need confirmation in the app.')
+finally:
+    source.unlink(missing_ok=True); reply.unlink(missing_ok=True)

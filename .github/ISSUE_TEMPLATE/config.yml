@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security reporting
+    url: https://github.com/mlwn4096/Bridge/blob/main/SECURITY.md
+    about: Read the private reporting guidance before disclosing a vulnerability.

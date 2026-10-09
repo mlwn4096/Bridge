@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>dev.bridge.mac.share</string>
+<key>CFBundleName</key><string>Bridge</string>
+<key>CFBundleDisplayName</key><string>Send with Bridge</string>
+<key>CFBundleExecutable</key><string>BridgeShare</string>
+<key>CFBundlePackageType</key><string>XPC!</string>
+<key>CFBundleShortVersionString</key><string>1.0</string>
+<key>CFBundleVersion</key><string>21</string>
+<key>LSMinimumSystemVersion</key><string>27.0</string>
+<key>NSExtension</key><dict>
+<key>NSExtensionPointIdentifier</key><string>com.apple.share-services</string>
+<key>NSExtensionPrincipalClass</key><string>BridgeShare.ShareViewController</string>
+<key>NSExtensionAttributes</key><dict>
+<key>NSExtensionActivationRule</key><dict>
+<key>NSExtensionActivationSupportsFileWithMaxCount</key><integer>3</integer>
+<key>NSExtensionActivationSupportsImageWithMaxCount</key><integer>3</integer>
+<key>NSExtensionActivationSupportsMovieWithMaxCount</key><integer>3</integer>
+<key>NSExtensionActivationSupportsText</key><true/>
+<key>NSExtensionActivationSupportsWebURLWithMaxCount</key><integer>1</integer>
+</dict></dict></dict>
+</dict></plist>

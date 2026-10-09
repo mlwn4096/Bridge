@@ -1,0 +1,31 @@
+name: Bug report
+description: Report a reproducible problem with the final Bridge app.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include pairing credentials, private files, clipboard text, or unredacted notifications. For vulnerabilities, see SECURITY.md."
+  - type: input
+    id: versions
+    attributes:
+      label: Versions and devices
+      description: Bridge version, macOS/Android versions, device models, and Wi-Fi or USB.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted logs or screenshots
+      description: Optional; remove identifying information and secrets.
