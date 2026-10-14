@@ -53,7 +53,7 @@ for mobile in [false, true] {
   secondary.withAlphaComponent(0.5).setStroke()
   let line=NSBezierPath(); line.lineWidth=1.5; line.move(to:NSPoint(x:center-20,y:pillY+26)); line.line(to:NSPoint(x:center+20,y:pillY+26)); line.stroke()
   NSGraphicsContext.restoreGraphicsState()
-  let name="bridge-header-\(dark ? "dark" : "light")\(mobile ? "-mobile" : "").png"
+  let name="bridge-header-v2-\(dark ? "dark" : "light")\(mobile ? "-mobile" : "").png"
   try bitmap.representation(using:.png,properties:[:])!.write(to:root.appendingPathComponent("docs/assets/"+name))
  }
 }
