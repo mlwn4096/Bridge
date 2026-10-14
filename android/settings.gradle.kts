@@ -6,3 +6,4 @@ dependencyResolutionManagement {
 rootProject.name = "Bridge"
 include(":app")
 include(":notification-test")
+include(":airdrop-lab")

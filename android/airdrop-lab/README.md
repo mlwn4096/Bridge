@@ -1,0 +1,93 @@
+# Bridge AirDrop Lab 0.1
+
+Experimental direct-AirDrop application layer for Android 12+. Installs as
+`dev.bridge.airdroplab`, separately from the paired Bridge companion. It needs no
+Mac relay, account, cloud service, root access or Bridge pairing.
+
+**Native Apple interoperability has not been demonstrated.** The lab attempts
+the published AirDrop application protocol on a network interface the phone
+already exposes. It does not implement firmware-level AWDL or BLE wake-up.
+Ordinary Wi-Fi discovery is a hypothesis to test, not a replacement for AWDL.
+
+## Install and try
+
+Build from the repository root:
+
+```sh
+python3 scripts/build-airdrop-lab.py
+python3 scripts/test-airdrop-lab.py
+adb install -r dist/Bridge-AirDrop-Lab.apk
+```
+
+The offline build uses JDK 17, Android SDK platform 37.0 and build tools 36.0.0.
+Pass `--sdk` and `--jdk` to use different installation locations. Signing uses a
+separate local lab debug key under `.build/airdrop/android-lab/`; keep it to install
+updates without uninstalling the lab. These scripts do not rebuild or replace
+the production Bridge APK. The module is also included in the Gradle project.
+
+For the initial Pixel 8 / Android 17 experiment:
+
+1. Install the APK and open **Bridge AirDrop Lab**. Allow local-network access when
+   requested. Read **Inspect phone interfaces** in the report.
+2. On the Apple device, enable Wi-Fi and Bluetooth, open its native AirDrop screen
+   and select **Everyone**. Connect both devices to the same Wi-Fi to test whether
+   native AirDrop is reachable on that infrastructure link.
+3. On Android, **Choose file** first; use a small `.txt` fixture. Returning from a
+   system picker stops previous networking, so choose before scanning/probing.
+4. Tap **Scan for AirDrop services**. If a service appears, select it, then tap
+   **Probe selected endpoint (/Discover)**. A manually known IP/port can be entered
+   instead. Discovery alone does not establish a usable AirDrop receiver.
+5. After a successful probe, tap **Send to probed receiver** and confirm the named
+   recipient yourself. Accept the request on the Apple device. Check the saved file
+   there even if the lab receives HTTP 200 for the upload.
+6. To try the other direction, tap **Start experimental receiver** and use native
+   AirDrop on the Apple device to look for **Bridge AirDrop Lab**. Accept the offer
+   in the lab. Use **Save a received file…** to export a committed file.
+7. Tap **Copy diagnostic report** to preserve the failure stage and interface
+   observations. The report includes local addresses, certificate fingerprints and
+   filenames, but no file contents or contact identity records.
+
+If discovery returns no services, record that result. The app cannot create an
+AWDL link merely by implementing the plist messages. If the Apple picker cannot
+see the lab, that is a useful link/discovery result, not a successful receiver test.
+
+## What is implemented
+
+- Interface inventory, OS-visible Bonjour discovery and sequential service resolution.
+- Manual IPv4/scoped-IPv6 endpoints and Wi-Fi-bound client sockets where available.
+- TLS 1.2/1.3 with a lab identity generated in Android Keystore. No Apple ID secrets
+  are imported. The probe permits an untrusted certificate; a later send pins that
+  exact leaf certificate. Receiver names remain unverified.
+- Binary plist `/Discover` and `/Ask`, followed by streaming gzip-filtered CPIO
+  `/Upload` using HTTP chunked framing. A send repeats `/Discover` on its upload
+  connection before asking for acceptance.
+- A TLS listener advertised as `_airdrop._tcp` with reference capability flags.
+  Every incoming offer needs explicit acceptance; the accepted file set is bound
+  to that connection and can authorize only its next upload.
+- Regular-file CPIO odc/newc receiving, private staging and a directory commit after
+  gzip verification and an exact match against the accepted filenames. Partial
+  files are deleted on errors; interrupted staging is removed on the next launch.
+- A system document picker to export received files, and explicit Stop networking.
+  Leaving the screen stops discovery, advertisements, listening and active sockets.
+
+The lab sends one file at a time and accepts 1–8 regular files, up to 32 MiB total.
+It rejects folders, links, duplicate/unexpected paths, unsafe names, oversized input,
+invalid framing, unsupported plist types and unsupported archive formats. It does
+not support Contacts Only, Apple-signed identity verification, DVZIP, media conversion,
+background operation, transfer resumption or guaranteed current-OS wire compatibility.
+
+## Validation
+
+The native Java app compiles against Android SDK 37 and the produced APK passes
+APK signature and 16 KiB alignment checks. The executable offline suite passes 56
+codec/framing/archive/offer/session checks. Python `plistlib` and system libarchive
+independently parse Java output; Java also reads fixtures generated by those tools.
+Session tests use an in-memory TLS transport, exercising the real receiver state
+machine. They do not verify Android Keystore or a native Apple TLS handshake.
+
+No physical Pixel/Apple transfer or Android UI test was possible in this session.
+ADB's socket listener is blocked by the execution sandbox. Live results are required
+before considering integration into the production companion.
+
+Protocol observations are sourced in [AIRDROP_INTEROP.md](../../docs/AIRDROP_INTEROP.md).
+The lab is an independent implementation; no OpenDrop/OWL source was copied.
