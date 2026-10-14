@@ -9,15 +9,15 @@ for mobile in [false, true] {
   NSGraphicsContext.saveGraphicsState()
   NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep:bitmap)
   let cg = NSGraphicsContext.current!.cgContext
-  let background = dark ? NSColor(calibratedRed:13.0/255,green:17.0/255,blue:23.0/255,alpha:1) : NSColor.white
-  background.setFill()
-  NSRect(x:0,y:0,width:width,height:height).fill()
+  // Keep the canvas transparent so GitHub's light, dark and dimmed themes
+  // show through without a rectangular background edge.
+  cg.clear(CGRect(x:0,y:0,width:width,height:height))
   let center = CGFloat(width)/2
   let primary = dark ? NSColor(calibratedWhite:0.96,alpha:1) : NSColor(calibratedWhite:0.10,alpha:1)
   let secondary = dark ? NSColor(calibratedRed:0.68,green:0.73,blue:0.78,alpha:1) : NSColor(calibratedRed:0.33,green:0.38,blue:0.43,alpha:1)
-  // Soft color fades into the GitHub light/dark reading surface.
+  // The glow fades to transparent before reaching the canvas edges.
   for (offset,r,g,b) in [(-100.0,0.25,0.48,0.96),(120.0,0.33,0.72,0.56)] {
-   cg.saveGState(); cg.translateBy(x:center+offset,y:mobile ? 235 : 195); cg.scaleBy(x:mobile ? 285 : 425,y:mobile ? 230 : 190)
+   cg.saveGState(); cg.translateBy(x:center+(mobile ? offset * 0.6 : offset),y:mobile ? 235 : 195); cg.scaleBy(x:mobile ? 260 : 425,y:mobile ? 230 : 190)
    let colors = [CGColor(red:r,green:g,blue:b,alpha:dark ? 0.11 : 0.08),CGColor(red:r,green:g,blue:b,alpha:0)] as CFArray
    cg.drawRadialGradient(CGGradient(colorsSpace:CGColorSpaceCreateDeviceRGB(),colors:colors,locations:[0,1])!,startCenter:.zero,startRadius:0,endCenter:.zero,endRadius:1,options:[])
    cg.restoreGState()
