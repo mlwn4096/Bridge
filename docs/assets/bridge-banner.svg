@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520" role="img" aria-labelledby="title desc">
+<title id="title">Bridge — Your devices, on speaking terms.</title>
+<desc id="desc">A Mac and Android phone connected directly. Files, clipboard, notifications. Local connection, no account, no cloud relay.</desc>
+<defs>
+<linearGradient id="bg" x2="1" y2="1"><stop stop-color="#101b2a"/><stop offset="1" stop-color="#080e17"/></linearGradient>
+<radialGradient id="glow"><stop stop-color="#277ca3" stop-opacity=".3"/><stop offset="1" stop-color="#277ca3" stop-opacity="0"/></radialGradient>
+<linearGradient id="line"><stop stop-color="#68a8ff"/><stop offset="1" stop-color="#78e7c4"/></linearGradient>
+</defs>
+<rect width="1280" height="520" rx="24" fill="url(#bg)"/>
+<ellipse cx="1010" cy="240" rx="390" ry="330" fill="url(#glow)"/>
+<g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Arial,sans-serif">
+<text x="64" y="75" font-size="14" letter-spacing="4" fill="#7ce5c6">MAC + ANDROID. TOGETHER.</text>
+<text x="60" y="170" font-size="80" font-weight="700" letter-spacing="-4" fill="#f1f6ff">Bridge</text>
+<text x="64" y="229" font-size="30" font-weight="600" fill="#f1f6ff">Your devices,</text>
+<text x="64" y="269" font-size="30" font-weight="600" fill="#f1f6ff">on speaking terms.</text>
+<text x="64" y="322" font-size="18" fill="#a8bbd1">Files. Clipboard. Notifications.</text>
+<text x="64" y="350" font-size="18" fill="#a8bbd1">A little less friction between screens.</text>
+<rect x="64" y="414" width="336" height="40" rx="20" fill="#142c32" stroke="#28544e"/>
+<circle cx="85" cy="434" r="4" fill="#7ce5c6"/>
+<text x="100" y="440" font-size="14" fill="#b8e8dc">Local connection · No account · No relay</text>
+<g fill="#101e30" stroke="#45617d" stroke-width="2">
+<rect x="625" y="130" width="355" height="233" rx="15"/>
+<path d="M605 365h395l-26 18H632z"/>
+<rect x="1015" y="95" width="160" height="310" rx="27"/>
+</g>
+<rect x="638" y="143" width="329" height="203" rx="6" fill="#152a40"/>
+<rect x="1025" y="106" width="140" height="288" rx="19" fill="#152e35"/>
+<rect x="1069" y="112" width="52" height="10" rx="5" fill="#080e17"/>
+<g fill="none" stroke="url(#line)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+<path d="M779 188v38m-12-12 12 12 12-12m-25 27h26"/>
+<path d="M1095 165v38m-12-12 12 12 12-12m-25 27h26"/>
+<path d="M936 263h108m-10-10 10 10-10 10M1044 287H936m10-10-10 10 10 10"/>
+</g>
+<text x="803" y="278" text-anchor="middle" font-size="19" font-weight="600" fill="#e4efff">Ready when you are.</text>
+<rect x="676" y="297" width="253" height="6" rx="3" fill="#263e56"/>
+<rect x="676" y="297" width="182" height="6" rx="3" fill="url(#line)"/>
+<text x="1095" y="251" text-anchor="middle" font-size="16" font-weight="600" fill="#d9f4e9">Connected</text>
+<rect x="1044" y="316" width="102" height="39" rx="10" fill="#23463f"/>
+<text x="1095" y="340" text-anchor="middle" font-size="14" fill="#b7efdc">Send a file</text>
+<text x="898" y="449" text-anchor="middle" font-size="13" letter-spacing="3" fill="#849db7">TWO DEVICES. ONE LOCAL CONNECTION.</text>
+</g></svg>
