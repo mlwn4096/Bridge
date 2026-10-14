@@ -15,11 +15,11 @@ Send a file. Share a thought. Leave your phone in your pocket.
 
 **[Get Bridge](#get-bridge)** · **[Features](#less-back-and-forth)** · **[Setup](#get-connected)** · **[Build](#build-it-yourself)** · **[Docs](#explore-the-project)**
 
-[Website](https://mlwn.in) · [Report a bug](https://github.com/mlwn4096/Bridge/issues) · [Buy me a coffee](https://buymeacoffee.com/mlwn)
+[Website](https://mlwn.in) · [Report a bug](https://github.com/mlwn4096/Bridge/issues)
 
 <br />
 
-<img src="docs/assets/bridge-banner.svg" width="100%" alt="Bridge connects your Mac and Android locally for files, clipboard, and notifications. No account or cloud relay. Illustration, not an app screenshot." />
+<a href="https://buymeacoffee.com/mlwn"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy me a coffee" height="50" width="181" /></a>
 
 </div>
 
