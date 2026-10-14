@@ -1,12 +1,10 @@
 <div align="center">
 
-<img src="mac/Resources/BridgeAppIcon.png" width="88" alt="Bridge app icon" />
-
-# Bridge
-
-### Your Mac and Android phone, on speaking terms.
-
-Send a file. Share a thought. Leave your phone in your pocket.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bridge-header-dark.png" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/bridge-header-light.png" />
+  <img src="docs/assets/bridge-header-light.png" width="800" alt="Bridge — Your Mac and Android phone, on speaking terms. Send a file. Share a thought. Leave your phone in your pocket." />
+</picture>
 
 [![macOS](https://img.shields.io/badge/macOS-27%2B-111827?style=flat-square&logo=apple&logoColor=white)](docs/BUILDING.md)
 [![Android](https://img.shields.io/badge/Android-10%2B-163c32?style=flat-square&logo=android&logoColor=7ce5c6)](docs/BUILDING.md)
