@@ -4,7 +4,7 @@ import AppKit
 let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
 for mobile in [false, true] {
  for dark in [true, false] {
-  let width = mobile ? 780 : 1600, height = mobile ? 650 : 500
+  let width = mobile ? 780 : 1600, height = mobile ? 820 : 680
   let bitmap = NSBitmapImageRep(bitmapDataPlanes:nil,pixelsWide:width,pixelsHigh:height,bitsPerSample:8,samplesPerPixel:4,hasAlpha:true,isPlanar:false,colorSpaceName:.deviceRGB,bytesPerRow:0,bitsPerPixel:0)!
   NSGraphicsContext.saveGraphicsState()
   NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep:bitmap)
@@ -17,9 +17,10 @@ for mobile in [false, true] {
   let secondary = dark ? NSColor(calibratedRed:0.68,green:0.73,blue:0.78,alpha:1) : NSColor(calibratedRed:0.33,green:0.38,blue:0.43,alpha:1)
   // The glow fades to transparent before reaching the canvas edges.
   for (offset,r,g,b) in [(-100.0,0.25,0.48,0.96),(120.0,0.33,0.72,0.56)] {
-   cg.saveGState(); cg.translateBy(x:center+(mobile ? offset * 0.6 : offset),y:mobile ? 235 : 195); cg.scaleBy(x:mobile ? 260 : 425,y:mobile ? 230 : 190)
-   let colors = [CGColor(red:r,green:g,blue:b,alpha:dark ? 0.11 : 0.08),CGColor(red:r,green:g,blue:b,alpha:0)] as CFArray
-   cg.drawRadialGradient(CGGradient(colorsSpace:CGColorSpaceCreateDeviceRGB(),colors:colors,locations:[0,1])!,startCenter:.zero,startRadius:0,endCenter:.zero,endRadius:1,options:[])
+   cg.saveGState(); cg.translateBy(x:center+(mobile ? offset * 0.45 : offset),y:mobile ? 350 : 320); cg.scaleBy(x:mobile ? 310 : 610,y:mobile ? 335 : 300)
+   let strength:CGFloat = dark ? 0.12 : 0.085
+   let colors = [1.0,0.48,0.10,0.0].map { CGColor(red:r,green:g,blue:b,alpha:strength * $0) } as CFArray
+   cg.drawRadialGradient(CGGradient(colorsSpace:CGColorSpaceCreateDeviceRGB(),colors:colors,locations:[0,0.35,0.70,1])!,startCenter:.zero,startRadius:0,endCenter:.zero,endRadius:1,options:[])
    cg.restoreGState()
   }
   func label(_ text:String, x:CGFloat? = nil, y:CGFloat, size:CGFloat, weight:NSFont.Weight = .regular, color:NSColor? = nil) {
@@ -27,8 +28,9 @@ for mobile in [false, true] {
    line.draw(at:NSPoint(x:x ?? (CGFloat(width)-line.size().width)/2,y:y))
   }
   let brandY:CGFloat = mobile ? 486 : 352
-  NSImage(contentsOf:root.appendingPathComponent("mac/Resources/BridgeAppIcon.png"))!.draw(in:NSRect(x:center-147,y:brandY,width:88,height:88))
-  label("Bridge",x:center-35,y:brandY+3,size:64,weight:.semibold)
+  let iconSize:CGFloat = mobile ? 180 : 160
+  NSImage(contentsOf:root.appendingPathComponent("mac/Resources/BridgeAppIcon.png"))!.draw(in:NSRect(x:center-iconSize/2,y:brandY+118,width:iconSize,height:iconSize))
+  label("Bridge",y:brandY+3,size:64,weight:.semibold)
   if mobile {
    label("Your Mac and Android,",y:365,size:48,weight:.medium)
    label("on speaking terms.",y:304,size:48,weight:.medium)
