@@ -1,5 +1,29 @@
 package dev.bridge.companion
 
+data class TransferTimings(val started: Long? = null, val phase: String = "", val entered: Long = 0,
+                           val milliseconds: Map<String, Long> = emptyMap(), val total: Long? = null) {
+    fun transition(state: String, now: Long): TransferTimings {
+        val next = when (state) {
+            "Preparing" -> "preparation"
+            "Waiting for phone", "Waiting for computer", "Accept to receive" -> "waiting"
+            "Sending", "Receiving" -> "transfer"
+            "Finishing", "Verifying" -> "finish"
+            "Complete" -> "complete"
+            else -> return this
+        }
+        if (next == "preparation" && phase != next) return TransferTimings(now, next, now)
+        if (started == null && next == "transfer") return TransferTimings(now, next, now)
+        if (started == null || total != null || now < entered || next == phase) return this
+        return copy(phase = next, entered = now, milliseconds = milliseconds + (phase to ((milliseconds[phase] ?: 0) + now - entered)),
+            total = if (next == "complete") now - started else null)
+    }
+    fun summary(): String? = total?.let {
+        "Total %.1fs · preparation %.1fs · waiting %.1fs · transfer %.1fs · finish %.1fs".format(
+            it / 1000.0, (milliseconds["preparation"] ?: 0) / 1000.0, (milliseconds["waiting"] ?: 0) / 1000.0,
+            (milliseconds["transfer"] ?: 0) / 1000.0, (milliseconds["finish"] ?: 0) / 1000.0)
+    }
+}
+
 class TransferRateEstimator(val total: Long, started: Long) {
     var bytes: Long = 0; private set
     var rate: Double = 0.0; private set

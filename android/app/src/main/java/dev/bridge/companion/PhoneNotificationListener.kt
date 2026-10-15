@@ -37,10 +37,13 @@ class PhoneNotificationListener : NotificationListenerService() {
         if (item.packageName == packageName || item.packageName in excluded || !item.isClearable) return false
         return runCatching { cancelNotification(key); true }.getOrDefault(false)
     }
-    private fun eligible(action: Notification.Action): Boolean = action.actionIntent != null &&
+    private fun eligible(action: Notification.Action): Boolean = Build.VERSION.SDK_INT >= 31 && action.actionIntent != null &&
         !action.actionIntent.isActivity && action.remoteInputs.isNullOrEmpty() && action.dataOnlyRemoteInputs.isNullOrEmpty() &&
-        (Build.VERSION.SDK_INT < 31 || !action.isAuthenticationRequired)
+        !action.isAuthenticationRequired
     private fun replyInput(action: Notification.Action): RemoteInput? {
+        // Older versions cannot identify activity PendingIntents safely. Mirroring
+        // and dismissal remain available; interact with those actions on the phone.
+        if (Build.VERSION.SDK_INT < 31) return null
         val intent = action.actionIntent ?: return null
         if (intent.isActivity || (Build.VERSION.SDK_INT >= 31 && (intent.isImmutable || action.isAuthenticationRequired)) ||
             !action.dataOnlyRemoteInputs.isNullOrEmpty()) return null

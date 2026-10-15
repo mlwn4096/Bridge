@@ -4,11 +4,12 @@ import CryptoKit
 import LocalAuthentication
 
 enum IdentityError: LocalizedError {
-    case generation(String), importFailed(OSStatus)
+    case generation(String), importFailed(OSStatus), legacyImport(String, OSStatus)
     var errorDescription: String? {
         switch self {
         case .generation(let detail): return "Could not create a device identity: \(detail)"
         case .importFailed(let status): return "Could not load device identity (\(status))."
+        case .legacyImport(let step, let status): return "Could not load legacy device identity during \(step) (\(status))."
         }
     }
 }
@@ -43,6 +44,8 @@ struct DeviceIdentity {
     let identity: SecIdentity
     let fingerprint: String
     let directory: URL
+    private let legacyStore: LegacyIdentityKeychain?
+    func unlockLegacyStorage() throws { try legacyStore?.unlock() }
     static func load(in location: URL? = nil) throws -> DeviceIdentity {
         let directory = location ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Bridge", isDirectory: true)
@@ -62,16 +65,44 @@ struct DeviceIdentity {
             try FileManager.default.moveItem(at: temporary, to: bundle)
         }
         let data = try Data(contentsOf: bundle)
-        var items: CFArray?
-        let status = SecPKCS12Import(data as CFData, [kSecImportExportPassphrase as String: formatPassword, kSecImportToMemoryOnly as String: true] as CFDictionary, &items)
-        guard status == errSecSuccess, let records = items as? [[String: Any]],
-              let value = records.first?[kSecImportItemIdentity as String] else { throw IdentityError.importFailed(status) }
-        let identity = value as! SecIdentity
+        let identity: SecIdentity
+        let legacyStore: LegacyIdentityKeychain?
+        if #available(macOS 15.0, *) {
+            identity = try importIdentity(data); legacyStore = nil
+        } else {
+            (identity, legacyStore) = try importLegacyIdentity(data)
+        }
         var certificate: SecCertificate?
         guard SecIdentityCopyCertificate(identity, &certificate) == errSecSuccess, let certificate else { throw IdentityError.importFailed(errSecItemNotFound) }
         let der = SecCertificateCopyData(certificate) as Data
         let fingerprint = SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
-        return DeviceIdentity(identity: identity, fingerprint: fingerprint, directory: directory)
+        return DeviceIdentity(identity: identity, fingerprint: fingerprint, directory: directory, legacyStore: legacyStore)
+    }
+    @available(macOS 15.0, *)
+    private static func importIdentity(_ data: Data) throws -> SecIdentity {
+        var items: CFArray?
+        let status = SecPKCS12Import(data as CFData, [kSecImportExportPassphrase as String: formatPassword, kSecImportToMemoryOnly as String: true] as CFDictionary, &items)
+        guard status == errSecSuccess, let records = items as? [[String: Any]],
+              let value = records.first?[kSecImportItemIdentity as String] else { throw IdentityError.importFailed(status) }
+        return value as! SecIdentity
+    }
+    /// macOS 13–14 needs an explicit private keychain to assemble a TLS identity.
+    /// Retain it for the identity's lifetime; never import into the login keychain.
+    static func importLegacyIdentity(_ data: Data) throws -> (SecIdentity, LegacyIdentityKeychain) {
+        let store = try LegacyIdentityKeychain()
+        var items: CFArray?
+        var access: SecAccess?
+        let accessStatus = SecAccessCreate("Bridge local TLS" as CFString, nil, &access)
+        guard accessStatus == errSecSuccess, let access else { throw IdentityError.legacyImport("access creation", accessStatus) }
+        let options: [String: Any] = [kSecImportExportPassphrase as String: formatPassword,
+                                     kSecImportExportKeychain as String: store.keychain,
+                                     kSecImportExportAccess as String: access]
+        let status = SecPKCS12Import(data as CFData, options as CFDictionary, &items)
+        guard status == errSecSuccess, let records = items as? [[String: Any]],
+              let value = records.first?[kSecImportItemIdentity as String] else {
+            throw IdentityError.legacyImport("PKCS12 import", status)
+        }
+        return (value as! SecIdentity, store)
     }
     private static func runOpenSSL(_ arguments: [String]) throws {
         let process = Process()
@@ -84,5 +115,46 @@ struct DeviceIdentity {
             let detail = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "OpenSSL failed"
             throw IdentityError.generation(detail)
         }
+    }
+}
+
+/// Ephemeral, encrypted storage for the pre-macOS-15 import API. The random
+/// password is never persisted; the existing protected PKCS#12 stays authoritative.
+final class LegacyIdentityKeychain {
+    let keychain: SecKeychain
+    let directory: URL
+    private let password: Data
+    init() throws {
+        let location = FileManager.default.temporaryDirectory.appendingPathComponent("BridgeTLS-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: location, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let password = Data(UUID().uuidString.utf8)
+        var reference: SecKeychain?
+        let status = password.withUnsafeBytes { bytes in
+            SecKeychainCreate(location.appendingPathComponent("identity.keychain").path,
+                              UInt32(bytes.count), bytes.baseAddress, false, nil, &reference)
+        }
+        guard status == errSecSuccess, let reference else {
+            try? FileManager.default.removeItem(at: location)
+            throw IdentityError.legacyImport("keychain creation", status)
+        }
+        self.keychain = reference; self.directory = location; self.password = password
+        let unlockStatus = password.withUnsafeBytes { bytes in
+            SecKeychainUnlock(reference, UInt32(bytes.count), bytes.baseAddress, true)
+        }
+        guard unlockStatus == errSecSuccess else {
+            SecKeychainDelete(reference)
+            try? FileManager.default.removeItem(at: location)
+            throw IdentityError.legacyImport("keychain unlock", unlockStatus)
+        }
+    }
+    func unlock() throws {
+        let status = password.withUnsafeBytes { bytes in
+            SecKeychainUnlock(keychain, UInt32(bytes.count), bytes.baseAddress, true)
+        }
+        guard status == errSecSuccess else { throw IdentityError.legacyImport("keychain unlock", status) }
+    }
+    deinit {
+        SecKeychainDelete(keychain)
+        try? FileManager.default.removeItem(at: directory)
     }
 }

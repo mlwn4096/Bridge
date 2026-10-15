@@ -1,4 +1,43 @@
 import Foundation
+import OSLog
+
+enum TransferDiagnostics {
+    private static let logger = Logger(subsystem: "dev.bridge.mac", category: "transfer")
+    static func complete(size: Int64, binary: Bool, route: String, timings: TransferTimings?) {
+        let value = "bytes=\(size) encoding=\(binary ? "binary-v1" : "json") route=\(route) \(timings?.summary ?? "Already received")"
+        logger.info("\(value, privacy: .public)")
+    }
+}
+
+struct TransferTimings {
+    private(set) var started: Double?
+    private var phase = ""
+    private var entered = 0.0
+    private(set) var seconds: [String: Double] = [:]
+    private(set) var total: Double?
+    mutating func transition(_ state: String, now: Double) {
+        guard now.isFinite else { return }
+        let next: String
+        switch state {
+        case "Preparing": next = "preparation"
+        case "Waiting for phone", "Waiting for computer", "Accept to receive": next = "waiting"
+        case "Sending", "Receiving": next = "transfer"
+        case "Finishing", "Verifying": next = "finish"
+        case "Complete": next = "complete"
+        default: return
+        }
+        if next == "preparation" && phase != next { self = TransferTimings() }
+        if started == nil && ["preparation", "transfer"].contains(next) { started = now; entered = now; phase = next; return }
+        guard let started, total == nil, now >= entered, next != phase else { return }
+        seconds[phase, default: 0] += now - entered; entered = now; phase = next
+        if next == "complete" { total = now - started }
+    }
+    var summary: String? {
+        guard let total else { return nil }
+        return String(format: "Total %.1fs · preparation %.1fs · waiting %.1fs · transfer %.1fs · finish %.1fs",
+                      total, seconds["preparation", default: 0], seconds["waiting", default: 0], seconds["transfer", default: 0], seconds["finish", default: 0])
+    }
+}
 
 struct TransferRateEstimator {
     let total: Int64

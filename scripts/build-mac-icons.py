@@ -27,7 +27,7 @@ with tempfile.TemporaryDirectory(prefix='bridge-native-icons-', dir=root / '.bui
     (iconset / 'Contents.json').write_text(json.dumps({'info': info, 'images': images}, indent=2))
     partial = stage / 'IconInfo.plist'
     subprocess.run(['xcrun', 'actool', str(catalog), '--compile', str(resources), '--platform', 'macosx',
-                    '--minimum-deployment-target', '27.0', '--app-icon', 'BridgeAppIcon',
+                    '--minimum-deployment-target', '13.0', '--app-icon', 'BridgeAppIcon',
                     '--output-partial-info-plist', str(partial), '--output-format', 'human-readable-text'], check=True)
     result = plistlib.loads(partial.read_bytes())
     assert result['CFBundleIconName'] == 'BridgeAppIcon' and result['CFBundleIconFile'] == 'BridgeAppIcon'

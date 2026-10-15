@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Set with scripts/configure-download-email.py after publishing the n8n form. -->
+    <string name="bridge_download_email_form_url" translatable="false"></string>
+</resources>

@@ -7,7 +7,7 @@ struct BridgeSupportView: View {
     var body: some View {
         BridgeContentColumn {
             VStack(alignment: .leading, spacing: 8) {
-                Image(systemName: "questionmark.circle.fill").font(.largeTitle).foregroundStyle(.tint)
+                Image(bridgeSymbol: "questionmark.circle.fill").font(.largeTitle).foregroundStyle(.tint)
                 Text("How can we help?").font(.title.bold())
                 Text("Help make Bridge better.").foregroundStyle(.secondary)
             }.padding(.vertical, 12)
@@ -35,9 +35,9 @@ struct BridgeSupportView: View {
     }
     private func linkRow(_ title: String, detail: String, icon: String) -> some View {
         HStack(spacing: 14) {
-            Image(systemName: icon).font(.title2).foregroundStyle(.tint).frame(width: 36)
+            Image(bridgeSymbol: icon).font(.title2).foregroundStyle(.tint).frame(width: 36)
             VStack(alignment: .leading, spacing: 4) { Text(title).font(.headline).foregroundStyle(.primary); Text(detail).font(.caption).foregroundStyle(.secondary) }
-            Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+            Spacer(); Image(bridgeSymbol: "chevron.right").font(.caption).foregroundStyle(.secondary)
         }.padding(.vertical, 12).contentShape(Rectangle())
     }
 }
@@ -58,7 +58,7 @@ struct BridgeSupportForm: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Image(systemName: bug ? "ladybug.fill" : "lightbulb.fill").foregroundStyle(bug ? .orange : .blue)
+                Image(bridgeSymbol: bug ? "ladybug.fill" : "lightbulb.fill").foregroundStyle(bug ? .orange : .blue)
                 Text(bug ? "Report a bug" : "Suggest a feature").font(.title2.bold())
                 Spacer(); Button("Done") { dismiss() }
             }

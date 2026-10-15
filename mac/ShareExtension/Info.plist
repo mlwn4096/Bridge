@@ -7,8 +7,8 @@
 <key>CFBundleExecutable</key><string>BridgeShare</string>
 <key>CFBundlePackageType</key><string>XPC!</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
-<key>CFBundleVersion</key><string>21</string>
-<key>LSMinimumSystemVersion</key><string>27.0</string>
+<key>CFBundleVersion</key><string>23</string>
+<key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSExtension</key><dict>
 <key>NSExtensionPointIdentifier</key><string>com.apple.share-services</string>
 <key>NSExtensionPrincipalClass</key><string>BridgeShare.ShareViewController</string>

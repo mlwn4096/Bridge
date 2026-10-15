@@ -2,6 +2,56 @@
 
 # Verification
 
+
+## October 15, 2026 — macOS 13 compatibility and processor-specific installers
+
+- Mac build 23 and Android version code 15. The main Mac app and Share extension
+  compile as separate optimized arm64 and x86_64 builds, both targeting macOS
+  13.0. Plists, Mach-O minimum versions, matching extension versions, seven App
+  Intents, six App Shortcuts, native icons and strict ad-hoc signatures verify.
+- `dist/Bridge-AppleSilicon.dmg` and `dist/Bridge-Intel.dmg` pass image checksums.
+  Each image was mounted read-only; its entire app payload matched the signed
+  source bundle, architecture and signature checks passed, and it was unmounted.
+  Both temporary-directory installer replacement/rollback suites pass. No change
+  to the user's Applications folder was made.
+- 285 protocol/TLS checks plus notification-artwork/local-device-snapshot checks
+  pass on Apple Silicon and for x86_64 binaries under the installed Rosetta runtime.
+  New checks force the legacy private-keychain import on the current OS, preserve
+  the certificate fingerprint, sign after lock/unlock and verify temporary cleanup.
+  This is not a macOS 13–14 runtime test or a native Intel performance benchmark.
+- 38 native UI checks pass on macOS 27, including creating/reusing the legacy
+  AppKit-hosted windows without presenting them and fallback system symbols. The
+  QA harness now runs AppKit's event loop so hosting native views does not stall
+  under dispatchMain. UI checks do not establish older-OS visual/accessibility
+  acceptance or real-device setup, Share extension hosting and Shortcuts execution.
+- Normal Gradle release compilation, JVM tests and lint passed using the installed
+  SDK/caches with dependency access, without the cached-library fallback. 67 JVM
+  tests pass; lint reports no errors or NewApi/InlinedApi findings. Existing
+  dependency/style warnings remain. APK signature, 16 KiB alignment, Google QR
+  scanner inclusion, API 29 minimum and non-debuggable release manifest verify.
+- Android 10–11 keeps mirroring/dismissal but requires phone interaction for actions
+  and replies, as explicitly selected by the user. Android 12+ advertises replies.
+  Configured hotspot and promoted-notification API guards now require API 36.1.
+  Tests cover capability boundaries at API 29/30/31/35/36.0/36.1/37.
+- Clipboard/heartbeat timer tolerance and USB timer leeway allow idle wakeup
+  coalescing. No measured Intel CPU, battery or throughput improvement is claimed.
+  Historical installers and existing source work were preserved.
+- Pending: native Intel hardware tests; macOS 13/14/15/26 runtime acceptance;
+  Android 10–17 emulator/physical-device coverage; pairing/update persistence and
+  end-to-end LAN/USB/hotspot transfers; comparative performance benchmarks. No app
+  installation, GitHub upload, Developer ID notarization or full OS-matrix
+  certification is claimed. See [COMPATIBILITY.md](COMPATIBILITY.md).
+
+## October 10, 2026 — companion download onboarding
+
+- Mac build 22 / Android version code 13. Production apps compile. Mac app/extension versions match; native icon catalog, bundled download QR and strict signatures verify. Compressed DMG extraction matches all 15 signed payload files.
+- Android signature and 16 KiB alignment pass; current Kotlin source hashes match the adjacent build report. Kotlin, Compose and application resources are freshly compiled; unchanged cached dependency DEX/resources are reused because online Gradle resolution is unavailable here.
+- 271 Mac checks and notification artwork/local snapshot checks pass. 58 Android JVM tests pass, including recipient-list/header-injection rejection and production HTTPS form URL validation.
+- Bundled download QR round-trip decodes to the GitHub Releases URL. Light/dark download previews were inspected.
+- n8n workflow structure and recipient validator were checked locally. No account/credential exists, so import, production form and live Gmail delivery are not tested. Current APK uses the explicit email-draft fallback.
+- First-launch window activation, Android UI/browser/email intents, permissions and actual pairing still need physical-device acceptance. No install or GitHub publication is claimed.
+
+
 ## 0.3.5 — input tuning and files
 
 - Both production apps compile. 261 Mac core, 62 Phone Control, 44 native mirror/input and 44 Android JVM checks pass. New tests cover scroll scaling, HID input/release, keyboard preference restoration and rejection retention/retry across restart.

@@ -14,7 +14,7 @@ struct BridgeTransferRow: View {
     private var hasActions: Bool { item.state == "Accept to receive" || queued != nil || !["Complete", "Cancelled", "Failed"].contains(item.state) || savedFile != nil }
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: item.incoming ? "arrow.down.doc" : "arrow.up.doc").font(.title3).foregroundStyle(.secondary).frame(width: 24)
+            Image(bridgeSymbol: item.incoming ? "arrow.down.doc" : "arrow.up.doc").font(.title3).foregroundStyle(.secondary).frame(width: 24)
             VStack(alignment: .leading, spacing: 8) {
                 Text(item.name).font(.headline).lineLimit(1).truncationMode(.middle).help(item.name)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -26,6 +26,7 @@ struct BridgeTransferRow: View {
                 if let queued, !queued.lastError.isEmpty { Text(queued.lastError).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                 if ["Sending", "Receiving", "Finishing", "Verifying"].contains(item.state) { ProgressView(value: item.progress) }
                 if ["Sending", "Receiving", "Finishing"].contains(item.state) { TransferMetricsCaption(item: item) }
+                if let summary = item.timings.summary { Text(summary).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                 if hasActions {
                     BridgeFlowLayout {
                         if item.state == "Accept to receive" { Button("Save…") { model.acceptTransfer(item.id) }.buttonStyle(.borderedProminent) }
@@ -45,9 +46,42 @@ struct BridgeTransfersView: View {
     @EnvironmentObject var model: BridgeModel
     var body: some View {
         BridgeContentColumn {
+            BridgeTransferConnectionCard()
             if model.transfers.isEmpty { BridgeEmptyState(title: "No transfers yet", detail: "Drop files from Finder or send them from Bridge on either device.", icon: "arrow.up.arrow.down") }
             else { ForEach(model.transfers) { BridgeTransferRow(item: $0) } }
         }
+    }
+}
+@MainActor private final class DirectTransferCardState: ObservableObject {
+    @Published var showPassword = false
+}
+struct BridgeTransferConnectionCard: View {
+    @EnvironmentObject var model: BridgeModel
+    @StateObject private var ui = DirectTransferCardState()
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Transfer connection", systemImage: "wifi").font(.headline)
+            if let configuration = model.directConfiguration {
+                Text(model.directStatus).font(.callout)
+                if !model.directConnected {
+                    BridgeSelectableText(text: "Network: " + configuration.ssid, semibold: true)
+                    if ui.showPassword { BridgeSelectableText(text: "Password: " + configuration.password) }
+                    BridgeFlowLayout {
+                        Button(ui.showPassword ? "Hide password" : "Show password") { ui.showPassword.toggle() }
+                        Button("Open Wi-Fi settings") { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.wifi-settings-extension")!) }
+                    }
+                    Text("Joining leaves your current Wi-Fi. Reconnect to it after ending direct mode.").font(.caption).foregroundStyle(.secondary)
+                }
+                Button("End direct mode") { model.endDirectTransfer() }.disabled(model.speedCheckRunning)
+            } else {
+                Text("Start Direct transfer in Bridge on your phone to bypass your router using a temporary hotspot.").font(.callout).foregroundStyle(.secondary)
+            }
+            Button(model.speedCheckRunning ? "Checking speed…" : "Check connection speed") { model.startSpeedCheck() }
+                .disabled(!model.connected || !model.speedCheckAvailable || model.speedCheckRunning || (model.directConfiguration != nil && !model.directConnected))
+            if !model.speedCheckStatus.isEmpty { Text(model.speedCheckStatus).font(.caption).foregroundStyle(.secondary) }
+            Text("The speed check sends 32 MiB without saving a file on your phone.").font(.caption).foregroundStyle(.secondary)
+        }.bridgeCard()
+        .onChange(of: model.directConfiguration?.sessionID) { _ in ui.showPassword = false }
     }
 }
 struct BridgeNotificationsView: View {
@@ -82,7 +116,7 @@ struct BridgeEmptyState: View {
     let icon: String
     var body: some View {
         VStack(spacing: 10) {
-            Image(systemName: icon).font(.system(size: 28)).foregroundStyle(.secondary)
+            Image(bridgeSymbol: icon).font(.system(size: 28)).foregroundStyle(.secondary)
             Text(title).font(.headline)
             Text(detail).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
         }.padding(.vertical, 28).frame(maxWidth: .infinity).bridgeCard()
@@ -110,9 +144,9 @@ struct BridgeClipboardRow: View {
             BridgeFlowLayout {
                 Button("Copy", systemImage: "doc.on.doc") { model.copyHistoryEntry(entry) }.help("Copy full text to the Mac clipboard")
                 if long { Button(ui.expanded ? "Show less" : "Show more") { ui.expanded.toggle() } }
-                Button { model.clipboardHistory.togglePin(entry.id) } label: { Image(systemName: entry.pinned ? "pin.slash" : "pin") }
+                Button { model.clipboardHistory.togglePin(entry.id) } label: { Image(bridgeSymbol: entry.pinned ? "pin.slash" : "pin") }
                     .help(entry.pinned ? "Unpin entry" : "Pin entry").accessibilityLabel(entry.pinned ? "Unpin entry" : "Pin entry")
-                Button(role: .destructive) { model.clipboardHistory.delete(entry.id) } label: { Image(systemName: "trash") }
+                Button(role: .destructive) { model.clipboardHistory.delete(entry.id) } label: { Image(bridgeSymbol: "trash") }
                     .help("Delete entry").accessibilityLabel("Delete entry")
             }.controlSize(.small)
         }.bridgeCard()
@@ -127,7 +161,7 @@ struct BridgePhoneAppIcon: View {
             if let data, let image = NSImage(data: data) {
                 Image(nsImage: image).resizable().interpolation(.high).scaledToFit()
             } else {
-                Image(systemName: "app.fill").resizable().scaledToFit().foregroundStyle(.secondary)
+                Image(bridgeSymbol: "app.fill").resizable().scaledToFit().foregroundStyle(.secondary)
             }
         }.frame(width: 24, height: 24).accessibilityHidden(true)
     }

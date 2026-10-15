@@ -2,27 +2,34 @@
 set -euo pipefail
 ROOT="${0:A:h:h}"
 if [[ "${BRIDGE_SKIP_BUILD:-0}" != "1" ]]; then "$ROOT/scripts/build-mac.sh"; fi
-codesign --verify --deep --strict "$ROOT/dist/Bridge.app"
-python3 "$ROOT/scripts/verify-mac-bundle.py" "$ROOT/dist/Bridge.app"
+source "$ROOT/scripts/mac-build-settings.sh"
+architectures=("${(@f)$(bridge_mac_architectures)}")
+for architecture in "${architectures[@]}"; do
+bridge_mac_select_arch "$architecture"
+codesign --verify --deep --strict "$BRIDGE_MAC_APP"
+python3 "$ROOT/scripts/verify-mac-bundle.py" "$BRIDGE_MAC_APP" --arch "$architecture"
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/mac/Info.plist")
 STAGE=$(mktemp -d "$ROOT/.build/dmg-stage.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT
-ditto --norsrc --noextattr "$ROOT/dist/Bridge.app" "$STAGE/Bridge.app"
+ditto --norsrc --noextattr "$BRIDGE_MAC_APP" "$STAGE/Bridge.app"
 codesign --verify --deep --strict "$STAGE/Bridge.app"
-python3 "$ROOT/scripts/verify-mac-bundle.py" "$STAGE/Bridge.app"
+python3 "$ROOT/scripts/verify-mac-bundle.py" "$STAGE/Bridge.app" --arch "$architecture"
 ln -s /Applications "$STAGE/Applications"
-cp "$ROOT/dist/Bridge.app/Contents/Resources/BridgeLauncherIcon.icns" "$STAGE/.VolumeIcon.icns"
+cp "$BRIDGE_MAC_APP/Contents/Resources/BridgeLauncherIcon.icns" "$STAGE/.VolumeIcon.icns"
 xcrun SetFile -a C "$STAGE" 2>/dev/null || true
-cat > "$STAGE/Install Bridge.txt" <<'EOF'
+cat > "$STAGE/Install Bridge.txt" <<EOF
 Drag Bridge.app into Applications, then open Bridge from Applications.
-Bridge requires an Apple Silicon Mac running macOS 27 or later.
-Bridge runs in the menu bar, without a Dock icon or startup window.
-Click its bridge icon to pair or use Bridge. Settings and Activity open
-only when selected from the menu-bar panel.
+This is the $BRIDGE_MAC_LABEL edition, requiring macOS 13 or later on supported hardware.
+Use About This Mac to check your processor. Intel Macs need Bridge-Intel.dmg;
+M-series Macs need Bridge-AppleSilicon.dmg. Both editions have the same features.
+Bridge runs in the menu bar, without a Dock icon. On first launch, a Welcome
+window helps you download the Android companion. Already installed? Choose
+Connect your phone to continue to pairing. Click the menu-bar icon to use Bridge.
 Allow local network access when prompted.
 
-Install Bridge on Android. Open it, scan the Mac code, and approve the phone
-on your Mac. The phone's main app appears after pairing is approved.
+Install Bridge on Android. Choose Already installed on the download screen,
+scan the Mac pairing code, and approve the phone on your Mac. The phone's main
+app appears after pairing is approved.
 Both devices need the same Wi-Fi, phone hotspot, or configured USB link.
 
 To update: quit Bridge, replace it in Applications with the newer version,
@@ -40,11 +47,11 @@ if [[ -f "$ROOT/docs/RELEASE_$VERSION.md" ]]; then
 elif [[ -f "$ROOT/docs/RELEASE_0.2.0.md" ]]; then
   cp "$ROOT/docs/RELEASE_0.2.0.md" "$STAGE/Release Notes.md"
 fi
-DMG="$ROOT/dist/Bridge-$VERSION.dmg"
+DMG="$ROOT/dist/Bridge-$BRIDGE_MAC_LABEL.dmg"
 USED_HYBRID=0
 if ! hdiutil create -volname "Bridge" -srcfolder "$STAGE" -ov -format UDZO "$DMG"; then
   # HFS hybrid creation does not need a temporary mounted disk device.
-  HYBRID="$STAGE/../Bridge-hybrid.dmg"
+  HYBRID="$ROOT/.build/Bridge-$BRIDGE_MAC_LABEL-hybrid.dmg"
   hdiutil makehybrid -hfs -hfs-volume-name "Bridge" -ov -o "$HYBRID" "$STAGE"
   # makehybrid invents nonzero Finder icon-location bytes for every entry.
   # Remove those catalog fields, proving every signed payload byte is intact.
@@ -64,6 +71,7 @@ if [[ -n "${BRIDGE_NOTARY_PROFILE:-}" ]]; then
   xcrun stapler validate "$DMG"
 fi
 hdiutil verify "$DMG"
+python3 "$ROOT/scripts/verify-mac-dmg.py" "$DMG" "$BRIDGE_MAC_APP" --arch "$architecture"
 if [[ "$USED_HYBRID" == "1" ]]; then
   # Inspect the actual compressed distribution artifact, not only its input.
   hdiutil convert "$DMG" -format UDTO -ov -o "$STAGE/inspection"
@@ -71,5 +79,7 @@ if [[ "$USED_HYBRID" == "1" ]]; then
   codesign --verify --deep --strict "$STAGE/Verified.app"
 fi
 shasum -a 256 "$DMG" > "$DMG.sha256"
-python3 "$ROOT/scripts/clean-old-releases.py" "$DMG"
 echo "Packaged $DMG"
+rm -rf "$STAGE"
+trap - EXIT
+done

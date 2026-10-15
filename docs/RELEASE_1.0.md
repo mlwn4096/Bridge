@@ -1,4 +1,43 @@
-> Historical final-build notes. Paths to `final build/`, personal signing identities and cached offline builds describe the private pre-publication workspace. Use [BUILDING.md](BUILDING.md) for this repository. These notes are not fresh-clone verification.
+# Bridge 1.0 — compatibility release candidate
+
+## October 15, 2026 — Mac build 23 / Android version code 15
+
+- Separate native downloads: **Bridge-Intel.dmg** and **Bridge-AppleSilicon.dmg**.
+  Both target macOS 13.0 and retain the same feature set on supported hardware.
+  One Android APK retains the Android 10/API 29 minimum.
+- Added older macOS API and window fallbacks, protected legacy TLS identity
+  loading, native symbol fallbacks and timer scheduling tolerances. No measured
+  Intel speed or battery improvement is claimed.
+- Android 10–11 retains notification mirroring and dismissal; actions and replies
+  require the phone. Android 12+ supports eligible actions/replies and wallpaper
+  colors. Configured direct hotspot and promoted notifications require Android
+  16.1+; earlier versions retain manual hotspot and standard notifications.
+- Verified: both Mac builds, signatures and mounted DMG payloads; 285 Mac checks
+  on Apple Silicon and under Rosetta; 38 native UI checks; 67 Android JVM tests;
+  Android release build, API compatibility lint, APK signing and alignment.
+
+> **Older OS versions are untested.** This compatibility update has not been
+> runtime-tested on macOS 13, 14, 15 or 26, or across Android 10–17 devices/emulators.
+> Mac checks ran on macOS 27 with Apple Silicon; Intel checks used Rosetta rather
+> than native Intel hardware. End-to-end device workflows and comparative speed
+> benchmarks remain pending. Use a prerelease label until device acceptance is
+> complete. Mac installers are ad-hoc signed and are not Developer ID notarized.
+
+See [compatibility and remaining checks](COMPATIBILITY.md),
+[verification evidence](VERIFICATION.md) and [build instructions](BUILDING.md).
+
+---
+
+The entries below are historical. Paths to `final build/`, personal signing
+identities and cached offline builds describe the private pre-publication
+workspace and do not supersede the compatibility status above.
+
+## October 10 download onboarding — Mac build 22 / Android version code 13
+
+Fresh, unpaired installations now start with a companion-download step. Mac opens a Welcome window with an Android download QR and button. Android offers the Mac release link and a prewritten email draft. Both have a persisted “Already installed?” action that advances to existing pairing. Paired users bypass this step.
+
+An importable n8n form-to-Gmail workflow prepares automatic one-time download emails. It is not deployed or connected to a sender yet; the shipped APK uses the explicit Gmail/email-app draft fallback. See [download/email setup](DOWNLOAD_ONBOARDING.md).
+
 
 ## October 8 complete launcher-icon follow-up — Mac build 21 / Android version code 12
 
@@ -36,7 +75,7 @@ Build 19 still showed the placeholder sender icon in the owner's screenshot. Bui
 - Verified: production Mac and Android builds; 50 Android unit tests including malformed device info and missing/desktop battery cases; 261 Mac protocol checks plus icon decoding/wire round-trip/local system snapshot checks; package version, signature and payload checks.
 - Device checks still required: actual Mac banner image presentation (sandbox attachment test returned “Unrecognized attachment file type”), Android navigation motion and system Live Update promotion. Availability of promoted notifications depends on Android/OEM support and user settings.
 
-# Bridge 1.0 — release candidate for device testing
+## Historical Bridge 1.0 — release candidate for device testing
 
 Mac build 15 · Android version code 10. Installers are in `final build`: `bridge_1.0.dmg` and `bridge_1.0.apk`. These are two separate platform installers. Not published or approved as production-stable yet.
 

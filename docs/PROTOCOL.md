@@ -1,5 +1,9 @@
 # Bridge protocol v1
 
+Optional `directHotspotV1` and `speedProbeV1` extend connection setup and diagnostics
+without changing file framing. See [DIRECT_TRANSFER.md](DIRECT_TRANSFER.md) for
+setup, measurement definitions and device-validation limits.
+
 Android is the TLS client; Mac hosts an ephemeral TCP port advertised as `_bridge._tcp`. Discovery is a hint, not trust: the QR-pinned SHA-256 certificate fingerprint must match before any pairing token or credential is sent. No cleartext transport exists.
 
 Control frames are UTF-8 JSON objects followed by LF (negotiated binary frames are described below):

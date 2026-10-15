@@ -145,7 +145,7 @@ struct DragSendCard: View {
     let feedback: String
     var body: some View {
         HStack(spacing: 14) {
-            Image(systemName: targeted ? "arrow.right.circle.fill" : "smartphone")
+            Image(bridgeSymbol: targeted ? "arrow.right.circle.fill" : "smartphone")
                 .font(.system(size: 30)).foregroundStyle(model.connected ? Color.accentColor : .secondary)
             VStack(alignment: .leading, spacing: 6) {
                 Text("Send to \(model.paired?.name ?? "Pixel")").font(.headline).lineLimit(2)

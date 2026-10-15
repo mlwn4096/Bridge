@@ -16,7 +16,9 @@ import AppKit
                 do { try await checks(model: model, upright: upright, console: console, suite: suite, windowFlags: windowFlags); exit(0) }
                 catch { print("UI checks failed: \(error)"); exit(1) }
             }
-            dispatchMain()
+            // Hosting real AppKit-backed views needs the main thread's native
+            // event loop; dispatchMain alone can deadlock SwiftUI layout updates.
+            NSApplication.shared.run()
         } else { PolishQAApp.main() }
     }
     @MainActor static func windowConfigurationFlags() -> (Bool, Bool) {
@@ -34,6 +36,17 @@ import AppKit
         func check(_ value: Bool, _ name: String) { precondition(value, name); count += 1 }
         check(windowFlags.0, "Main window is resizable")
         check(windowFlags.1, "Main window has native primary fullscreen behavior")
+        check(BridgeSymbols.name("bridge.nonexistent.symbol") == "questionmark.circle", "Missing system symbol has a visible fallback")
+        check(BridgeSymbols.name("iphone.nonexistent.symbol") == "iphone", "Missing phone symbol has a meaningful fallback")
+        check(BridgeWindows.legacyController("unknown", model: model) == nil, "Unknown window IDs do not open a window")
+        for name in ["setup", "settings", "developer", "bridge"] {
+            let controller = BridgeWindows.legacyController(name, model: model)!
+            check(controller === BridgeWindows.legacyController(name, model: model), "Legacy windows are reused")
+            check(controller.window?.isVisible == false, "Legacy windows are created without launch presentation")
+            check(controller.window?.isRestorable == false, "Legacy windows do not reopen through state restoration")
+            check(controller.window?.styleMask.contains(.resizable) == true, "Legacy window supports native resizing")
+            controller.close()
+        }
         let id = UUID().uuidString
         model.transfers = [TransferItem(id: id, name: "Test folder.zip", size: 10, incoming: false, state: "Queued")]
         model.showTransferNotice("Folder queued as Test folder.zip", ids: [id])
@@ -126,8 +139,8 @@ struct PolishQARoot: View {
                     Button("Narrow") { qa.resize(false) }
                     Button("Wide") { qa.resize(true) }
                     Toggle("Dark", isOn: $qa.dark)
-                    Toggle("Empty", isOn: $qa.empty).onChange(of: qa.empty) { qa.load() }
-                    Toggle("Disconnected", isOn: $qa.disconnected).onChange(of: qa.disconnected) { qa.load() }
+                    Toggle("Empty", isOn: $qa.empty).onChange(of: qa.empty) { _ in qa.load() }
+                    Toggle("Disconnected", isOn: $qa.disconnected).onChange(of: qa.disconnected) { _ in qa.load() }
                 }
             }.padding(12).background(.bar)
             Divider()

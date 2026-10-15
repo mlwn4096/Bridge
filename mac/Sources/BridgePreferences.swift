@@ -22,7 +22,7 @@ struct BridgePreferences: View {
                 ForEach(panes, id: \.0) { title, icon in
                     Button { ui.selection = title } label: {
                         VStack(spacing: 5) {
-                            Image(systemName: icon).font(.system(size: 27, weight: .regular)).frame(height: 32)
+                            Image(bridgeSymbol: icon).font(.system(size: 27, weight: .regular)).frame(height: 32)
                             Text(title).font(.system(size: 12))
                         }
                         .foregroundStyle(ui.selection == title ? Color.accentColor : Color.secondary)

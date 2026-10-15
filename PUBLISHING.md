@@ -25,7 +25,14 @@ limits visible. See CONTRIBUTING.md and docs/BUILDING.md.
 
 Source publication and installer distribution are separate. After device acceptance,
 create a version tag and GitHub Release; use prerelease while validation remains pending.
-Attach the DMG, APK, checksums and relevant build notes. Do not commit installers.
+Attach both processor-specific DMGs (`Bridge-Intel.dmg` and
+`Bridge-AppleSilicon.dmg`), the Android APK, checksums and relevant build notes.
+Do not commit installers; `dist/` remains excluded from Git.
+For this compatibility candidate, explicitly state that older macOS versions
+(13, 14, 15 and 26), native Intel hardware and the Android 10–17 device matrix
+are untested. The macOS 13+ and Android 10+ minimums are compatibility targets,
+not verified support or equal-performance guarantees. Copy the current notice
+from docs/RELEASE_1.0.md into any GitHub prerelease description.
 Use your backed-up release signing key for Android updates; Mac release distribution
 requires your own Developer ID identity/notarization setup. Default Mac builds are
 ad-hoc signed. The cached Android fallback is not a fresh dependency-resolved build.
@@ -48,7 +55,9 @@ In the parent workspace, `publish-bridge.zsh` pushes main and applies the descri
 topics, Issues and private vulnerability reporting. It uses GitHub CLI authentication,
 and never force-pushes. Run it from your normal Terminal if this session cannot reach GitHub.
 
-Existing build checks: Mac protocol/artwork checks passed; Android cached-toolchain
-JVM suite passed 56 tests. Final DMG/APK package checks passed. A fresh Gradle build
-and physical-device acceptance are still pending; do not describe 1.0 as audited or
-production-stable on the strength of compilation alone.
+Current build checks: 285 Mac protocol/TLS checks plus artwork/local snapshot
+checks passed on Apple Silicon and under Rosetta; 38 native UI checks passed on
+macOS 27. The normal Gradle release build, 67 JVM tests and API compatibility lint
+passed. Both DMG payloads and APK signing/alignment passed. Older OS and physical
+device acceptance remain pending; do not describe 1.0 as audited or
+production-stable on the strength of compilation alone. See docs/VERIFICATION.md.

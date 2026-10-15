@@ -121,7 +121,7 @@ struct BridgeSearchView: View {
     }
     @ViewBuilder private func resultCard<Actions: View>(icon: String, title: String, detail: String, @ViewBuilder actions: () -> Actions) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon).foregroundStyle(.secondary).frame(width: 20)
+            Image(bridgeSymbol: icon).foregroundStyle(.secondary).frame(width: 20)
             VStack(alignment: .leading, spacing: 6) {
                 BridgeSelectableText(text: title, semibold: true, lineLimit: 2).help(title)
                 BridgeSelectableText(text: detail, secondary: true, lineLimit: 5)
@@ -134,7 +134,7 @@ struct BridgeSearchView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Commands").font(.headline)
             TextField("Try “send files”, “copy to phone”, “ring phone”, “pause queue” or “resume queue”", text: $ui.command)
-                .textFieldStyle(.roundedBorder).onChange(of: ui.command) { ui.commandStatus = "" }
+                .textFieldStyle(.roundedBorder).onChange(of: ui.command) { _ in ui.commandStatus = "" }
             if let intent = BridgeCommandIntent.parse(ui.command) {
                 HStack(alignment: .top) {
                     Text(intent.preview).font(.callout).foregroundStyle(.secondary)

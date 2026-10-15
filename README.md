@@ -8,7 +8,7 @@
   <img src="docs/assets/bridge-header-v2-light.png" width="800" alt="Bridge — Your Mac and Android, on speaking terms. Send a file. Share a thought. Leave your phone in your pocket." />
 </picture>
 
-[![macOS](https://img.shields.io/badge/macOS-27%2B-111827?style=flat-square&logo=apple&logoColor=white)](docs/BUILDING.md)
+[![macOS](https://img.shields.io/badge/macOS-13%2B-111827?style=flat-square&logo=apple&logoColor=white)](docs/BUILDING.md)
 [![Android](https://img.shields.io/badge/Android-10%2B-163c32?style=flat-square&logo=android&logoColor=7ce5c6)](docs/BUILDING.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-243a59?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Early%20release%20candidate-493b20?style=flat-square)](docs/VERIFICATION.md)
@@ -76,7 +76,18 @@ available yet, [build both apps from source](#build-it-yourself).
 
 | Mac | Android | Connection |
 | --- | --- | --- |
-| Apple Silicon · macOS 27+ | Android 10+ | Same Wi-Fi or hotspot, or authorized USB/ADB |
+| Intel or Apple Silicon · macOS 13+ on supported hardware | Android 10+ | Same Wi-Fi or hotspot, or authorized USB/ADB |
+
+Both Mac editions have the same features. Check **Apple menu → About This Mac**:
+“Processor: Intel” needs the Intel download; “Chip: Apple M…” needs Apple Silicon.
+The compatibility target is macOS 13–27 on Apple-supported hardware combinations.
+See [compatibility and verification status](docs/COMPATIBILITY.md) before deployment.
+
+> **Older OS versions are untested.** macOS 13, 14, 15 and 26 have not been
+> runtime-tested for this compatibility update. The Android 10–17 device matrix
+> is also untested. Mac checks ran on macOS 27 with Apple Silicon; Intel checks
+> ran under Rosetta, not on an Intel Mac. These are compatibility targets,
+> not verified support or equal-speed guarantees.
 
 > **Early release candidate.** Builds and automated checks have passed, but several
 > workflows still need real-device testing. Expect rough edges. Screen mirroring
@@ -89,7 +100,8 @@ Use **Already installed?** at the bottom to continue to pairing. Android can als
 prepare an email with the Mac download link; optional automatic delivery uses a
 [separately configured n8n workflow](docs/DOWNLOAD_ONBOARDING.md).
 
-1. Open `dist/Bridge-1.0.dmg` and drag **Bridge** into **Applications**. Quit any older
+1. Open `dist/Bridge-Intel.dmg` for an Intel Mac or `dist/Bridge-AppleSilicon.dmg`
+   for an Apple Silicon Mac, then drag **Bridge** into **Applications**. Quit any older
    instance before replacing it, then open the app. Look in the menu bar.
 2. Install `dist/Bridge-1.0.apk` on your phone and open it.
 3. Keep both devices on the same network. Scan the Mac’s QR code from Android, or paste
@@ -158,7 +170,10 @@ for the trust and storage details.
 ## A few things to know
 
 **Android being Android:** background clipboard reads are restricted by the OS, and
-notification actions depend on the app that created them. After a reboot or force-stop,
+notification actions depend on the app that created them. On Android 10–11,
+mirroring and dismissal remain available; use your phone for notification actions
+and replies. Wallpaper colors require Android 12+, and automatic direct hotspot
+setup requires Android 16.1+; manual hotspot connections remain available below that. After a reboot or force-stop,
 you may need to reopen Bridge. Battery-saving policies can affect the connection too.
 
 **If it won’t connect:** check that both apps are running, the devices share a network,
@@ -176,6 +191,7 @@ The [feature guide](docs/FEATURES.md) explains queues, retries, and save locatio
 | [Feature guide](docs/FEATURES.md) | Transfer limits, permissions, queues, and save locations. |
 | [Architecture](docs/ARCHITECTURE.md) | How the Swift Mac app and Kotlin Android companion fit together. |
 | [Protocol & trust](docs/PROTOCOL.md) | Pairing, transport, certificate pinning, and storage. |
+| [Compatibility](docs/COMPATIBILITY.md) | Mac processor downloads, OS fallbacks and pending device checks. |
 | [Build guide](docs/BUILDING.md) | SDK setup, platform instructions, and signing options. |
 | [Verification](docs/VERIFICATION.md) | Completed checks and remaining device testing. |
 | [Acceptance checklist](docs/FEATURE_IMPLEMENTATION_CHECKLIST.md) | Workflows to check before release. |

@@ -4,19 +4,23 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 
 data class Transfer(val id: String, val name: String, val size: Long, val incoming: Boolean,
-                    val status: String = "Waiting", val progress: Float = 0f, val path: String? = null, val bytesPerSecond: Double = 0.0, val lastProgressElapsed: Long = 0, val failureReason: String = "")
+                    val status: String = "Waiting", val progress: Float = 0f, val path: String? = null, val bytesPerSecond: Double = 0.0, val lastProgressElapsed: Long = 0, val failureReason: String = "", val timings: TransferTimings = TransferTimings())
 data class MacDeviceInfo(val model: String = "", val os: String = "", val chip: String = "", val cores: Int = 0,
                          val memoryTotal: Long = 0, val storageTotal: Long = 0, val storageFree: Long = 0,
                          val battery: Int? = null, val charging: Boolean = false, val onAC: Boolean = false,
                          val updatedAt: Long = 0)
 data class UIState(val status: String = "Not connected", val connected: Boolean = false, val pairing: Boolean = false,
                    val macName: String = "", val macInfo: MacDeviceInfo? = null, val clipboard: String = "", val link: String = "",
-                   val transfers: List<Transfer> = emptyList(), val error: String = "", val ringing: Boolean = false)
+                   val transfers: List<Transfer> = emptyList(), val error: String = "", val ringing: Boolean = false,
+                   val directSupported: Boolean = false, val directMode: Boolean = false, val directConnected: Boolean = false,
+                   val directSSID: String = "", val directStatus: String = "", val speedCheckSupported: Boolean = false,
+                   val speedCheckRunning: Boolean = false, val speedCheckStatus: String = "")
 object BridgeState {
     val state = MutableStateFlow(UIState())
     fun updateTransfer(id: String, status: String, progress: Float? = null, path: String? = null, bytesPerSecond: Double? = null, failureReason: String? = null) {
         state.update { ui -> ui.copy(transfers = ui.transfers.map {
-            if (it.id == id) it.copy(status = status, progress = progress ?: it.progress, path = path ?: it.path, bytesPerSecond = bytesPerSecond ?: it.bytesPerSecond, failureReason = failureReason ?: it.failureReason, lastProgressElapsed = if (progress != null) android.os.SystemClock.elapsedRealtime() else it.lastProgressElapsed) else it
+            if (it.id == id) it.copy(status = status, progress = progress ?: it.progress, path = path ?: it.path, bytesPerSecond = bytesPerSecond ?: it.bytesPerSecond, failureReason = failureReason ?: it.failureReason, lastProgressElapsed = if (progress != null) android.os.SystemClock.elapsedRealtime() else it.lastProgressElapsed,
+                timings = it.timings.transition(status, android.os.SystemClock.elapsedRealtime())) else it
         }) }
     }
     fun addTransfer(transfer: Transfer) {

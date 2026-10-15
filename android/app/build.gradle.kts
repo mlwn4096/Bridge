@@ -10,13 +10,24 @@ android {
         applicationId = "dev.bridge.companion"
         minSdk = 29
         targetSdk = 37
-        versionCode = 12
+        versionCode = 15
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
-    // Developer builds use the local Android debug key. Public releases may
+    // Preserve existing personal-build update identity when available. Public releases may
     // supply a private key using environment variables; never commit keys.
     val releaseKeystore = System.getenv("BRIDGE_ANDROID_KEYSTORE")
+    val localBridgeKeystore = rootProject.file("../../private-workspace/.tooling/gradle/android-signing.jks")
+    if (localBridgeKeystore.isFile) {
+        signingConfigs {
+            create("localBridge") {
+                storeFile = localBridgeKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
     if (!releaseKeystore.isNullOrBlank()) {
         signingConfigs {
             create("distribution") {
@@ -29,9 +40,11 @@ android {
     }
     buildFeatures { compose = true }
     buildTypes {
+        getByName("debug") {
+            if (localBridgeKeystore.isFile) signingConfig = signingConfigs.getByName("localBridge")
+        }
         getByName("release") {
-            // Debug-signed unless a distribution key is explicitly supplied.
-            signingConfig = signingConfigs.getByName(if (releaseKeystore.isNullOrBlank()) "debug" else "distribution")
+            signingConfig = signingConfigs.getByName(if (!releaseKeystore.isNullOrBlank()) "distribution" else if (localBridgeKeystore.isFile) "localBridge" else "debug")
             isDebuggable = false
         }
     }
@@ -48,7 +61,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.1")
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    // Play services brings Fragment 1.0.0 transitively; Activity Result requires 1.3+.
+    implementation("androidx.fragment:fragment:1.8.9")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }

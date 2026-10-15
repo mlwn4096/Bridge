@@ -14,6 +14,9 @@ final class PeerConnection: @unchecked Sendable {
     var receiverProgress = false
     var supportsTransferFailure = false
     var supportsNotificationReplies = false
+    var supportsDirectTransfer = false
+    var supportsSpeedProbe = false
+    var directSessionID = ""
     var onFileChunk: ((PeerConnection, BinaryFileChunk, @escaping () -> Void) -> Void)?
     var onMessage: ((PeerConnection, WireMessage) -> Void)?
     var onClose: ((PeerConnection) -> Void)?

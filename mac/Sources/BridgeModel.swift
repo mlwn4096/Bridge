@@ -18,6 +18,7 @@ struct PhoneNotification: Identifiable {
 struct TransferItem: Identifiable {
     let id: String; let name: String; let size: Int64; let incoming: Bool
     var progress: Double = 0; var bytesPerSecond: Double = 0; var lastProgressUptime: Double = 0; var state: String = "Waiting"; var destination: URL?; var date: Date = Date()
+    var timings = TransferTimings()
 }
 // File IO is serialized by fileIOQueue; binary writes/cancellation additionally share a lock.
 // Main-thread finalization follows transport backpressure completion, so it cannot overlap a write.
@@ -205,6 +206,20 @@ private final class OutgoingFile {
     private let fileIOQueue = DispatchQueue(label: "Bridge.fileIO", qos: .utility)
     private var receiving: [String: IncomingFile] = [:]
     private var sending: [String: OutgoingFile] = [:]
+    @Published var directConfiguration: DirectConfiguration?
+    @Published var directConnected = false
+    @Published var directStatus = ""
+    @Published var speedCheckStatus = ""
+    @Published var speedCheckRunning = false
+    private let directBeacon = DirectBeacon()
+    private var directDeadline: DispatchWorkItem?
+    private var speedProbe: SpeedProbeRun?
+    private var speedProbeDeadline: DispatchWorkItem?
+    private var directEnding = false
+    var directToolsAvailable: Bool { active?.supportsDirectTransfer == true }
+    var speedCheckAvailable: Bool { active?.supportsSpeedProbe == true && active?.supportsBinary == true }
+    private var routeChanging: Bool { directEnding || (directConfiguration != nil && !directConnected) }
+    private var transportToolsIdle: Bool { sending.isEmpty && receiving.isEmpty && offers.isEmpty && folderTasks.isEmpty && speedProbe == nil }
 
     init(preview: Bool = false, automationDefaults: UserDefaults? = nil) {
         self.preview = preview
@@ -270,10 +285,12 @@ private final class OutgoingFile {
             clipboardTimer = Timer(timeInterval: 0.75, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.checkClipboard() }
             }
+            clipboardTimer?.tolerance = 0.15
             if let clipboardTimer { RunLoop.main.add(clipboardTimer, forMode: .common) }
             heartbeatTimer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.heartbeat() }
             }
+            heartbeatTimer?.tolerance = 1
             if let heartbeatTimer { RunLoop.main.add(heartbeatTimer, forMode: .common) }
             NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.refreshPairing(); self?.heartbeat() }
@@ -351,6 +368,10 @@ private final class OutgoingFile {
     private func receive(_ peer: PeerConnection, _ message: WireMessage) {
         if !peer.authorized {
             peer.isUSB = message.string("transport") == "usb"
+            peer.directSessionID = message.string("transport") == "direct" ? message.string("directSessionID") : ""
+            if message.string("transport") == "direct" && (directConfiguration == nil || peer.directSessionID != directConfiguration?.sessionID) { peer.close(); return }
+            peer.supportsDirectTransfer = (message.payload["capabilities"] as? [String] ?? []).contains("directHotspotV1")
+            peer.supportsSpeedProbe = (message.payload["capabilities"] as? [String] ?? []).contains("speedProbeV1")
             if message.type == "pairRequest" {
                 let deviceID = message.string("deviceID"), credential = message.string("credential")
                 guard paired == nil, pairingRequest == nil, Date() < tokenExpires,
@@ -387,7 +408,7 @@ private final class OutgoingFile {
                 peer.supportsTransferFailure = (message.payload["capabilities"] as? [String] ?? []).contains("fileFailureV1")
                 peer.supportsNotificationReplies = (message.payload["capabilities"] as? [String] ?? []).contains("notificationReplyV1")
                 authorize(peer, deviceID: paired.id)
-                peer.send(WireMessage("authAccepted", ["name": Host.current().localizedName ?? "Mac", "capabilities": ["binaryFileV1", "receiverProgressV1", "fileFailureV1", "notificationReplyV1"]]))
+                peer.send(WireMessage("authAccepted", ["name": Host.current().localizedName ?? "Mac", "capabilities": ["binaryFileV1", "receiverProgressV1", "fileFailureV1", "notificationReplyV1", "directHotspotV1", "speedProbeV1"]]))
                 peer.send(WireMessage("deviceInfo", BridgeLocalDeviceInfo.snapshot()))
                 syncPreferences()
             } else { peer.close() }
@@ -407,6 +428,43 @@ private final class OutgoingFile {
         seenIDs.append(message.id); if seenIDs.count > 2048 { seenIDs.removeFirst(1024) }
         peer.send(WireMessage("ack", ["messageID": message.id]))
         switch message.type {
+        case "directOffer":
+            guard peer.supportsDirectTransfer, !peer.isUSB, transportToolsIdle, directConfiguration == nil,
+                  let configuration = DirectConfiguration(message.payload), let port else {
+                peer.send(WireMessage("directRejected", ["message": "Finish current transfers and speed checks before starting Direct transfer."])); return
+            }
+            do {
+                try directBeacon.start(configuration: configuration, port: port)
+                directConfiguration = configuration; directConnected = false
+                directStatus = "Join this temporary network in your Mac’s Wi-Fi settings."
+                let deadline = DispatchWorkItem { [weak self] in
+                    guard let self, self.directConfiguration?.sessionID == configuration.sessionID, !self.directConnected else { return }
+                    self.endDirectTransfer(); self.notice = "Direct setup timed out. Reconnect to your usual Wi-Fi and try again."
+                }
+                directDeadline = deadline; DispatchQueue.main.asyncAfter(deadline: .now() + 120, execute: deadline)
+                peer.send(WireMessage("directReady", ["sessionID": configuration.sessionID]))
+                BridgeApplicationDelegate.showPage("transfers")
+            } catch { peer.send(WireMessage("directRejected", ["message": "Could not start direct discovery. Check local network access."])) }
+        case "directStopped": if message.string("sessionID") == directConfiguration?.sessionID { clearDirectTransfer() }
+        case "directStopRequest":
+            guard message.string("sessionID") == directConfiguration?.sessionID else { return }
+            guard transportToolsIdle else { peer.send(WireMessage("directRejected", ["message": "Finish current transfers before ending Direct transfer."])); return }
+            peer.send(WireMessage("directStopReady", ["sessionID": directConfiguration?.sessionID ?? ""]))
+            clearDirectTransfer()
+        case "speedProbeRequest":
+            if !transportToolsIdle || routeChanging { peer.send(WireMessage("speedProbeUnavailable", ["message": "Finish current transfers and direct setup before checking speed."])) }
+            else { startSpeedCheck() }
+        case "speedProbeAccepted":
+            if let run = speedProbe, message.string("transferID") == run.id { sendSpeedProbe(run, peer: peer) }
+        case "speedProbeRejected":
+            if message.string("transferID") == speedProbe?.id { finishSpeedCheck("Speed check unavailable while the phone is busy.") }
+        case "speedProbeResult":
+            guard let run = speedProbe, message.string("transferID") == run.id,
+                  message.integer("receivedBytes") == speedProbeBytes, run.completionSent, let started = run.started else { return }
+            let elapsed = max(0.001, ProcessInfo.processInfo.systemUptime - started)
+            finishSpeedCheck(String(format: "Connection: %.1f MB/s · 32 MiB received in %.2fs · %@", Double(speedProbeBytes) / elapsed / 1_000_000, elapsed, peer.isUSB ? "USB" : (directConnected ? "Direct Wi-Fi" : "Local network")))
+        case "speedProbeCancel":
+            if message.string("transferID") == speedProbe?.id { finishSpeedCheck("Speed check cancelled.") }
         case "usbSwitchRequest":
             // Both endpoints must be idle before replacing the active route.
             if sending.isEmpty && receiving.isEmpty && offers.isEmpty {
@@ -462,7 +520,9 @@ private final class OutgoingFile {
                 incomingLink = handoff.url.absoluteString; incomingHandoff = handoff
                 systemNotification("Link from your phone", body: "\(handoff.host) · Click to open", id: "bridge.link", category: "bridge.link", metadata: ["handoffID": handoff.id.uuidString])
             }
-        case "fileOffer": offer(message)
+        case "fileOffer":
+            if routeChanging || speedProbe != nil { peer.send(WireMessage("fileReject", ["transferID": message.string("transferID")])) }
+            else { offer(message) }
         case "fileAccept": beginSending(message.string("transferID"), binary: message.string("encoding") == "binary-v1")
         case "fileReject":
             let id = message.string("transferID")
@@ -497,7 +557,9 @@ private final class OutgoingFile {
             let id = message.string("transferID")
             guard let file = sending[id], let transfer = transfers.first(where: { $0.id == id }),
                   (["Finishing", "Verifying"].contains(transfer.state) || (transfer.state == "Waiting for phone" && message.payload["alreadyReceived"] as? Bool == true && message.string("sha256") == file.expectedHash && message.integer("size") == file.size)) else { return }
-            updateTransfer(id, state: "Complete", progress: 1); cleanupOutgoing(id); removeQueuedFile(id); scheduleQueuePump()
+            updateTransfer(id, state: "Complete", progress: 1)
+            TransferDiagnostics.complete(size: file.size, binary: file.binary, route: peer.isUSB ? "usb" : (directConnected ? "direct" : "lan"), timings: transfers.first(where: { $0.id == id })?.timings)
+            cleanupOutgoing(id); removeQueuedFile(id); scheduleQueuePump()
             systemNotification("File sent to phone", body: file.url.lastPathComponent, id: "bridge.transfer." + id)
         case "phoneFiles":
             guard message.string("requestID") == phoneFilesRequest else { return }
@@ -548,7 +610,7 @@ private final class OutgoingFile {
             let device = PairedDevice(id: request.deviceID, name: request.name)
             paired = device; UserDefaults.standard.set(try JSONEncoder().encode(device), forKey: "pairedDevice")
             authorize(peer, deviceID: request.deviceID); pairingRequest = nil; tokenExpires = .distantPast; pairingURL = ""
-            peer.send(WireMessage("pairAccepted", ["name": Host.current().localizedName ?? "Mac", "capabilities": ["binaryFileV1", "receiverProgressV1", "fileFailureV1", "notificationReplyV1"]]))
+            peer.send(WireMessage("pairAccepted", ["name": Host.current().localizedName ?? "Mac", "capabilities": ["binaryFileV1", "receiverProgressV1", "fileFailureV1", "notificationReplyV1", "directHotspotV1", "speedProbeV1"]]))
             peer.send(WireMessage("deviceInfo", BridgeLocalDeviceInfo.snapshot()))
             syncPreferences(); requestNotificationPermission()
         } catch { notice = error.localizedDescription; rejectPairing() }
@@ -565,10 +627,13 @@ private final class OutgoingFile {
             previous.close()
         }
         active = peer; peer.authorized = true; peer.deviceID = deviceID
+        directEnding = false
+        directConnected = directConfiguration != nil && peer.directSessionID == directConfiguration?.sessionID
+        if directConnected { directDeadline?.cancel(); directStatus = "Connected directly to your phone." }
         pairingKeyBlocked = false
         lastConnected = Date(); UserDefaults.standard.set(lastConnected, forKey: "lastConnected." + deviceID)
         automation.emit(.phoneConnected, context: paired?.name ?? "Phone")
-        connected = true; status = peer.isUSB ? "Connected via USB" : "Connected"; seenIDs = []; clipboardCount = NSPasteboard.general.changeCount
+        connected = true; status = peer.isUSB ? "Connected via USB" : (directConnected ? "Connected via Direct Wi-Fi" : "Connected"); seenIDs = []; clipboardCount = NSPasteboard.general.changeCount
         connectionNoticeGeneration = UUID()
         scheduleQueuePump()
         if Date().timeIntervalSince(lastConnectionBanner) > 30 {
@@ -580,6 +645,9 @@ private final class OutgoingFile {
         peers.removeValue(forKey: peer.id)
         if pairingRequest?.id == peer.id { pairingRequest = nil }
         guard active === peer else { return }
+        finishSpeedCheck(speedProbe == nil ? nil : "Speed check interrupted.")
+        directConnected = false
+        directEnding = false
         automation.emit(.phoneDisconnected, context: paired?.name ?? "Phone")
         active = nil; connected = false; battery = nil; ringing = false
         phoneChip = ""; phoneSecurityPatch = ""; phoneCores = 0; phoneMemoryTotal = nil; phoneMemoryAvailable = nil; phoneInfoUpdated = nil
@@ -599,6 +667,7 @@ private final class OutgoingFile {
         for id in Array(offers.keys) { cancelTransfer(id, send: false) }
     }
     func unpair(send: Bool = true) {
+        clearDirectTransfer(); finishSpeedCheck(nil)
         if send, let active { active.send(WireMessage("unpair")) }
         queueGeneration = UUID(); folderTasks.values.forEach { $0.cancel() }; folderTasks.removeAll()
         for id in Array(sending.keys) { cleanupOutgoing(id) }
@@ -618,6 +687,8 @@ private final class OutgoingFile {
         clipboardHistory.clear(); notifications = []; incomingClipboard = ""; dismissHandoff(); refreshPairing()
     }
     private func heartbeat() {
+        do { try identity?.unlockLegacyStorage() }
+        catch { notice = error.localizedDescription }
         scheduleQueuePump()
         if let active {
             if ProcessInfo.processInfo.systemUptime - active.lastSeenUptime > 50 { active.close() } else { active.send(WireMessage("ping")); active.send(WireMessage("deviceInfo", BridgeLocalDeviceInfo.snapshot())) }
@@ -634,6 +705,7 @@ private final class OutgoingFile {
         guard autoClipboard, connected else { return }; sendClipboard(manual: false)
     }
     var clipboardAccessDescription: String {
+        guard #available(macOS 15.4, *) else { return "System managed" }
         switch NSPasteboard.general.accessBehavior {
         case .alwaysAllow: return "Always allowed"
         case .alwaysDeny: return "Denied"
@@ -649,7 +721,7 @@ private final class OutgoingFile {
         guard active != nil, connected else { notice = "Connect your phone before sending text"; return }
         if manual { NSApp.activate(ignoringOtherApps: true) }
         let pasteboard = NSPasteboard.general
-        if pasteboard.accessBehavior == .alwaysDeny {
+        if #available(macOS 15.4, *), pasteboard.accessBehavior == .alwaysDeny {
             notice = "Clipboard access is denied. Allow Bridge in System Settings → Privacy & Security → Clipboard."
             return
         }
@@ -886,7 +958,7 @@ private final class OutgoingFile {
         DispatchQueue.main.async { [weak self] in self?.queuePumpScheduled = false; self?.pumpQueue() }
     }
     private func pumpQueue() {
-        guard connected, let deviceID = paired?.id, let queue = outgoingQueue else { return }
+        guard connected, !routeChanging, speedProbe == nil, let deviceID = paired?.id, let queue = outgoingQueue else { return }
         for entry in queue.entries where sending.count < 3 && entry.deviceID == deviceID && entry.epoch == queueEpoch && !entry.paused && entry.retryAfter <= Date() && sending[entry.id] == nil && !suppressedQueueIDs.contains(entry.id) {
             do { startQueuedFile(entry, url: try queue.validateSource(entry)) }
             catch { var failed = entry; failed.paused = true; failed.lastError = error.localizedDescription; try? queue.replace(failed); updateTransfer(entry.id, state: "Paused"); notice = error.localizedDescription }
@@ -1189,7 +1261,73 @@ private final class OutgoingFile {
         if transfers.count >= 50 { transfers.removeAll { ["Complete", "Cancelled", "Failed"].contains($0.state) } }
         transfers.insert(transfer, at: 0)
     }
+    func endDirectTransfer() {
+        guard transportToolsIdle else { notice = "Finish current transfers or speed checks before ending Direct transfer."; return }
+        if let active { active.send(WireMessage("directEndRequest")) }
+        else { clearDirectTransfer(); notice = "Reconnect your Mac to its usual Wi-Fi. End Direct transfer on your phone too." }
+    }
+    private func clearDirectTransfer() {
+        directDeadline?.cancel(); directDeadline = nil; directBeacon.stop()
+        directConfiguration = nil; directConnected = false; directStatus = ""
+        directEnding = active?.directSessionID.isEmpty == false
+        scheduleQueuePump()
+    }
+    func startSpeedCheck() {
+        guard let peer = active, peer.authorized, peer.supportsBinary, peer.supportsSpeedProbe,
+              transportToolsIdle, !routeChanging else { notice = "Connect and finish current transfers before running a speed check."; return }
+        let run = SpeedProbeRun(); speedProbe = run; speedCheckRunning = true; speedCheckStatus = "Checking connection speed…"
+        peer.send(WireMessage("speedProbeOffer", ["transferID": run.id, "size": speedProbeBytes]))
+        let deadline = DispatchWorkItem { [weak self] in
+            guard let self, self.speedProbe === run else { return }
+            self.active?.send(WireMessage("speedProbeCancel", ["transferID": run.id]))
+            self.finishSpeedCheck("Speed check timed out. Try again with no transfers running.")
+        }
+        speedProbeDeadline = deadline; DispatchQueue.main.asyncAfter(deadline: .now() + 45, execute: deadline)
+    }
+    private func sendSpeedProbe(_ run: SpeedProbeRun, peer: PeerConnection) {
+        guard speedProbe === run, run.task == nil else { return }
+        run.started = ProcessInfo.processInfo.systemUptime
+        run.task = Task.detached { [weak self] in
+            do {
+                var bytes = [UInt8](repeating: 0, count: BinaryFileChunk.maxData)
+                guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { throw WireError.invalidTransfer }
+                let data = Data(bytes)
+                var sequence: Int64 = 0
+                var pending: [AsyncThrowingStream<Void, Error>] = []
+                while sequence * Int64(data.count) < speedProbeBytes {
+                    try Task.checkCancellation()
+                    if pending.count == 4 { for try await _ in pending.removeFirst() { } }
+                    var batch: [BinaryFileChunk] = []
+                    for _ in 0..<4 {
+                        batch.append(BinaryFileChunk(transferID: run.id, sequence: sequence, data: data)); sequence += 1
+                    }
+                    let receipt = try await peer.submitBinaryBatch(batch, isActive: { [weak self] in self?.speedProbe === run && self?.active === peer })
+                    pending.append(receipt)
+                }
+                for receipt in pending { for try await _ in receipt { } }
+                try Task.checkCancellation()
+                await MainActor.run { [weak self] in
+                    guard self?.speedProbe === run, self?.active === peer else { return }
+                    run.completionSent = true
+                    peer.send(WireMessage("speedProbeComplete", ["transferID": run.id]))
+                }
+            } catch { await MainActor.run { [weak self] in
+                guard self?.speedProbe === run else { return }
+                peer.send(WireMessage("speedProbeCancel", ["transferID": run.id])); self?.finishSpeedCheck("Speed check interrupted.")
+            } }
+        }
+    }
+    private func finishSpeedCheck(_ message: String?) {
+        speedProbeDeadline?.cancel(); speedProbeDeadline = nil
+        speedProbe?.task?.cancel(); speedProbe = nil; speedCheckRunning = false
+        if let message { speedCheckStatus = message }
+        scheduleQueuePump()
+    }
     private func updateTransfer(_ id: String, state: String, progress: Double? = nil) {
-        if let index = transfers.firstIndex(where: { $0.id == id }) { if transfers[index].state != state { clearTransferNotice(id) }; transfers[index].state = state; if let progress { transfers[index].progress = progress } }
+        if let index = transfers.firstIndex(where: { $0.id == id }) {
+            if transfers[index].state != state { clearTransferNotice(id) }
+            transfers[index].timings.transition(state, now: ProcessInfo.processInfo.systemUptime)
+            transfers[index].state = state; if let progress { transfers[index].progress = progress }
+        }
     }
 }

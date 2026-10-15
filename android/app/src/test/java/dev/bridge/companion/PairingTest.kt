@@ -28,6 +28,14 @@ class PairingTest {
         assertTrue(runCatching { Pairing.fromJSON(JSONObject(stored.toString()).put("credential", "bad")) }.isFailure)
         assertTrue(runCatching { Pairing.fromJSON(JSONObject(stored.toString()).put("token", token)) }.isFailure)
     }
+    @Test fun linuxPairingPersistsPlatformAndLegacyMacDefaults() {
+        val linux = Pairing.fromURL("$url&platform=linux").copy(token = "")
+        assertEquals("linux", linux.platform)
+        assertEquals("linux", Pairing.fromJSON(linux.json()).platform)
+        assertEquals("macos", Pairing.fromURL(url).platform)
+        assertEquals("macos", Pairing.fromJSON(Pairing.fromURL(url).copy(token = "").json().apply { remove("platform") }).platform)
+        assertEquals("desktop", Pairing.fromURL("$url&platform=future").platform)
+    }
     @Test fun historyRetainsLiveTransfersBeyondCompletedHistoryCap() {
         val active = Transfer("active", "Large file", 100, true, "Receiving")
         val completed = (1..60).map { Transfer("done$it", "File", 1, true, "Complete") }

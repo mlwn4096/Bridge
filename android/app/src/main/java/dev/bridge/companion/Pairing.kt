@@ -16,14 +16,14 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 data class Pairing(val host: String, val port: Int, val fingerprint: String, val token: String,
-                   val name: String, val service: String, val deviceID: String, val credential: String) {
+                   val name: String, val service: String, val deviceID: String, val credential: String, val platform: String = "macos") {
     fun json(): JSONObject = payload("host" to host, "port" to port, "fingerprint" to fingerprint,
-        "token" to token, "name" to name, "service" to service, "deviceID" to deviceID, "credential" to credential)
+        "token" to token, "name" to name, "service" to service, "deviceID" to deviceID, "credential" to credential, "platform" to platform)
     companion object {
         fun fromURL(raw: String): Pairing {
             require(raw.length <= 4096) { "Pairing link is too long" }
             val uri = URI(raw.trim())
-            require(uri.scheme == "bridge" && uri.host == "pair" && uri.userInfo == null && uri.port == -1 && uri.fragment == null && uri.path.orEmpty().isEmpty()) { "Paste a Bridge pairing link from your Mac" }
+            require(uri.scheme == "bridge" && uri.host == "pair" && uri.userInfo == null && uri.port == -1 && uri.fragment == null && uri.path.orEmpty().isEmpty()) { "Paste a Bridge pairing link from your computer" }
             val fields = uri.rawQuery?.split("&") ?: error("Missing pairing details")
             val query = fields.map {
                 val parts = it.split("=", limit = 2)
@@ -35,18 +35,18 @@ data class Pairing(val host: String, val port: Int, val fingerprint: String, val
             require(query.map { it.first }.distinct().size == query.size) { "Duplicate pairing details" }
             val values = query.toMap()
             val host = values["host"].orEmpty(); val port = values["port"]?.toIntOrNull() ?: 0
-            require(host.matches(Regex("[A-Za-z0-9.:%_-]{1,253}")) && port in 1..65535) { "Invalid Mac address" }
+            require(host.matches(Regex("[A-Za-z0-9.:%_-]{1,253}")) && port in 1..65535) { "Invalid computer address" }
             val fingerprint = values["fingerprint"].orEmpty()
             require(validHash(fingerprint)) { "Invalid certificate fingerprint" }
             val token = values["token"].orEmpty()
             require(java.util.Base64.getDecoder().decode(token).size == 32) { "Invalid pairing token" }
             val secret = ByteArray(32).also { SecureRandom().nextBytes(it) }
             return Pairing(host, port, fingerprint, token, values["name"].orEmpty().take(80), values["service"].orEmpty().take(80),
-                UUID.randomUUID().toString(), java.util.Base64.getEncoder().encodeToString(secret))
+                UUID.randomUUID().toString(), java.util.Base64.getEncoder().encodeToString(secret), desktopPlatform(values["platform"]))
         }
         fun fromJSON(value: JSONObject): Pairing {
             val peer = Pairing(value.getString("host"), value.getInt("port"), value.getString("fingerprint"),
-                value.optString("token"), value.getString("name"), value.optString("service"), value.getString("deviceID"), value.getString("credential"))
+                value.optString("token"), value.getString("name"), value.optString("service"), value.getString("deviceID"), value.getString("credential"), desktopPlatform(value.optString("platform", "macos")))
             require(peer.host.matches(Regex("[A-Za-z0-9.:%_-]{1,253}")) && peer.port in 1..65535 && validHash(peer.fingerprint))
             require(peer.token.isEmpty() && UUID.fromString(peer.deviceID).toString() == peer.deviceID)
             require(java.util.Base64.getDecoder().decode(peer.credential).size == 32)
@@ -81,4 +81,11 @@ class SecureStore(context: Context) {
         }.getOrNull()
     }
     fun clear() { check(prefs.edit().clear().commit()) }
+}
+
+// Missing metadata is a legacy Mac pairing; unknown future platforms remain generic.
+internal fun desktopPlatform(value: String?): String = when (value?.lowercase()) {
+    null, "", "macos", "darwin" -> "macos"
+    "linux", "arch", "archlinux" -> "linux"
+    else -> "desktop"
 }

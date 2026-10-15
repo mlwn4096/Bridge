@@ -47,12 +47,23 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.journeyapps.barcodescanner.ScanContract
-import com.journeyapps.barcodescanner.ScanOptions
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import kotlinx.coroutines.*
 import java.io.File
 
 class MainActivity : ComponentActivity() {
+    private val directPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) BridgeService.instance?.startDirectTransfer()
+        else BridgeState.state.value = BridgeState.state.value.copy(error = "Allow nearby Wi-Fi access to create a direct connection")
+    }
+    private fun startDirectTransfer() {
+        if ((Build.VERSION.SDK_INT < 36 || Build.VERSION.SDK_INT_FULL < Build.VERSION_CODES_FULL.BAKLAVA_1)) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED) BridgeService.instance?.startDirectTransfer()
+        else directPermission.launch(Manifest.permission.NEARBY_WIFI_DEVICES)
+    }
+    private var companionInstallCompleted by mutableStateOf(false)
     private var sharedFolderRevision by mutableIntStateOf(0)
     private val flashlightPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
@@ -70,7 +81,7 @@ class MainActivity : ComponentActivity() {
                 prefs.edit().putString("phoneFilesTree", uri.toString()).apply()
                 if (!old.isNullOrEmpty() && old != uri.toString()) runCatching { contentResolver.releasePersistableUriPermission(Uri.parse(old), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
                 sharedFolderRevision++
-                toastMessage = "Folder shared with your paired Mac"
+                toastMessage = "Folder shared with your paired computer"
             }.onFailure { toastMessage = "Unable to retain folder access: ${it.message}" }
         }
     }
@@ -108,17 +119,44 @@ class MainActivity : ComponentActivity() {
     }
     private fun chooseReceiveLocation(id: String) {
         val name = BridgeService.instance?.offeredFileName(id)
-        if (name == null) { BridgeState.state.value = BridgeState.state.value.copy(error = "This transfer has expired. Send it again from your Mac."); return }
+        if (name == null) { BridgeState.state.value = BridgeState.state.value.copy(error = "This transfer has expired. Send it again from your computer."); return }
         if (choosingReceiveID != null) { BridgeState.state.value = BridgeState.state.value.copy(error = "Finish choosing the current save location first"); return }
         choosingReceiveID = id; receiveDestination.launch(name)
     }
     private val permissionRequest = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         permissionsRevision++
         if (localPermissionGranted()) pendingAction?.invoke()
-        else BridgeState.state.value = BridgeState.state.value.copy(error = "Allow local network access to connect to your Mac")
+        else BridgeState.state.value = BridgeState.state.value.copy(error = "Allow local network access to connect to your computer")
         pendingAction = null
     }
-    private val scanner = registerForActivityResult(ScanContract()) { result -> result.contents?.let { pair(it) } }
+    private var scanInProgress = false
+    private fun scanPairingCode() {
+        if (scanInProgress) return
+        scanInProgress = true
+        BridgeState.state.value = BridgeState.state.value.copy(error = "")
+        val options = GmsBarcodeScannerOptions.Builder()
+            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+            .enableAutoZoom()
+            .build()
+        GmsBarcodeScanning.getClient(this, options).startScan()
+            .addOnSuccessListener { barcode ->
+                scanInProgress = false
+                if (!isFinishing && !isDestroyed) {
+                    val value = barcode.rawValue
+                    if (!value.isNullOrBlank()) pair(value)
+                    else BridgeState.state.value = BridgeState.state.value.copy(error = "Could not read this QR code. Scan the pairing code shown in Bridge.")
+                }
+            }
+            .addOnCanceledListener { scanInProgress = false }
+            .addOnFailureListener {
+                scanInProgress = false
+                if (!isFinishing && !isDestroyed) {
+                    BridgeState.state.value = BridgeState.state.value.copy(
+                        error = "Could not open the Android QR scanner. Check that Google Play services is up to date and connect to the internet for its first setup, then try again. You can also paste the pairing link below."
+                    )
+                }
+            }
+    }
     private fun enqueueFiles(uris: List<Uri>): Boolean {
         if (uris.isEmpty() || SecureStore(this).load() == null) return false
         BridgeService.instance?.let { return it.sendFiles(uris) }
@@ -167,6 +205,7 @@ class MainActivity : ComponentActivity() {
     private var amoled by mutableStateOf(false)
     override fun onCreate(savedInstanceState: Bundle?) {
         val appearancePrefs = getSharedPreferences("bridge", MODE_PRIVATE)
+        companionInstallCompleted = appearancePrefs.getBoolean(DownloadLinks.COMPLETED_KEY, false) || SecureStore(this).load() != null
         appearance = BridgeAppearance.stored(appearancePrefs.getString("appearance", null))
         amoled = appearancePrefs.getBoolean("amoled", false)
         historyEnabled = appearancePrefs.getBoolean("clipboardHistory", false)
@@ -231,7 +270,7 @@ class MainActivity : ComponentActivity() {
             return false
         }
         val accepted = if (asLink) service.sendLink(text, title = title) else service.sendText(text)
-        if (accepted) { if (!asLink) rememberClipboard(text, "This phone"); toastMessage = "Sent to your Mac"; sent() }
+        if (accepted) { if (!asLink) rememberClipboard(text, "This phone"); toastMessage = "Sent to your computer"; sent() }
         return accepted
     }
     private fun sendSharedContent(): Boolean {
@@ -253,7 +292,12 @@ class MainActivity : ComponentActivity() {
     }
     private fun pair(url: String) {
         runCatching { Pairing.fromURL(url) }.onFailure { BridgeState.state.value = BridgeState.state.value.copy(error = it.message ?: "Invalid code"); return }
+        completeCompanionInstall()
         withConnectionPermissions { startServiceAction(BridgeService.ACTION_PAIR, url) }
+    }
+    private fun completeCompanionInstall() {
+        getSharedPreferences("bridge", MODE_PRIVATE).edit().putBoolean(DownloadLinks.COMPLETED_KEY, true).apply()
+        companionInstallCompleted = true
     }
     private fun startServiceAction(action: String, url: String? = null) {
         val intent = Intent(this, BridgeService::class.java).setAction(action)
@@ -277,7 +321,7 @@ class MainActivity : ComponentActivity() {
     private fun copyReceived() {
         val text = BridgeState.state.value.clipboard
         if (text.isNotEmpty()) {
-            getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("From Mac", text))
+            getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("From computer", text))
             toastMessage = "Copied to your phone"
         }
     }
@@ -354,13 +398,13 @@ class MainActivity : ComponentActivity() {
                 onDismissRequest = { cancel() },
                 icon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
                 title = { Text("Sensitive text detected") },
-                text = { Text("${request.reason}. Send this text to your Mac just this once?") },
+                text = { Text("${request.reason}. Send this text to your computer just this once?") },
                 confirmButton = { TextButton(enabled = ui.connected, onClick = {
                     textApproval = null
                     val service = BridgeService.instance
                     val consent = ClipboardConsent(request.text)
                     val accepted = if (request.asLink) service?.sendLink(request.text, consent, request.title) else service?.sendText(request.text, consent)
-                    if (accepted == true) { toastMessage = "Sent to your Mac"; request.sent() }
+                    if (accepted == true) { toastMessage = "Sent to your computer"; request.sent() }
                 }) { Text("Send once") } },
                 dismissButton = { TextButton(onClick = { cancel() }) { Text("Don’t send") } }
             )
@@ -372,8 +416,12 @@ class MainActivity : ComponentActivity() {
             onDraftChange = { if (supportKind == "bug") bugDraft = it else featureDraft = it }, onDismiss = { supportKind = "" })
         val paired = remember(revision, ui.connected, ui.macName) { SecureStore(this).load() }
         if (paired == null) {
+            if (!companionInstallCompleted && !ui.pairing) {
+                CompanionDownloadScreen(onContinue = { completeCompanionInstall() })
+                return
+            }
             PairingScreen(ui, manualURL, { manualURL = it }, onScan = {
-                scanner.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt("Scan the code in Bridge on your Mac").setBeepEnabled(false))
+                scanPairingCode()
             }, onPair = { pair(manualURL.trim()) }, onSupport = { supportKind = "bug" })
             return
         }
@@ -441,10 +489,10 @@ class MainActivity : ComponentActivity() {
                         }
                     } }
                     if (shown.isEmpty()) item("empty") {
-                        EmptyState(Icons.Outlined.FolderOpen, if (ui.transfers.isEmpty()) "No files yet" else "Nothing here", if (ui.transfers.isEmpty()) "Choose files on your phone, or send them from Bridge on your Mac." else "Transfers will appear here when their status matches this filter.")
+                        EmptyState(Icons.Outlined.FolderOpen, if (ui.transfers.isEmpty()) "No files yet" else "Nothing here", if (ui.transfers.isEmpty()) "Choose files on your phone, or send them from Bridge on your computer." else "Transfers will appear here when their status matches this filter.")
                         if (ui.transfers.isEmpty()) FilledTonalButton(onClick = { tab = 0 }, modifier = Modifier.fillMaxWidth()) { Text("Send files") }
                     } else {
-                        item("save-help") { Text("Downloads/FromMac · Files over 1 GB ask where to save", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        item("save-help") { Text("Downloads/FromBridge · Files over 1 GB ask where to save", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         items(shown, key = { it.id }) { transfer -> TransferCard(transfer, transferClock) }
                     }
                 }
@@ -456,7 +504,8 @@ class MainActivity : ComponentActivity() {
                     0 -> {
                         SectionHeading("Your devices", "Send something across.")
                         MacDeviceCard(ui, paired.name) { withConnectionPermissions { startServiceAction(BridgeService.ACTION_START) } }
-                        if (!ui.connected) InfoCard(Icons.Outlined.WifiOff, "Let’s reconnect", "Open Bridge on your Mac and use the same Wi-Fi or phone hotspot. Tap the reconnect button above.")
+                        DirectTransferCard(ui, ::startDirectTransfer)
+                        if (!ui.connected) InfoCard(Icons.Outlined.WifiOff, "Let’s reconnect", "Open Bridge on your computer and use the same Wi-Fi or phone hotspot. Tap the reconnect button above.")
                         Surface(onClick = { filePicker.launch("*/*") }, shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer) {
                             Row(Modifier.fillMaxWidth().padding(24.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                                 Icon(Icons.Outlined.UploadFile, null, Modifier.size(36.dp))
@@ -471,7 +520,7 @@ class MainActivity : ComponentActivity() {
                             LinearProgressIndicator(Modifier.fillMaxWidth())
                             TextButton(onClick = { folderJob?.cancel() }) { Text("Cancel folder preparation") }
                         } else TextButton(onClick = { folderPicker.launch(null) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.FolderOpen, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Send a folder as ZIP") }
-                        if (!ui.connected) Text("Files queue safely until your Mac reconnects.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (!ui.connected) Text("Files queue safely until your computer reconnects.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         SettingsGroup("Quick send") {
                             SettingsRow(Icons.Outlined.ContentPaste, "Clipboard", if (ui.connected) "Send copied text" else "Connect to send text", enabled = ui.connected, onClick = { clipboardToMac() }) { Icon(Icons.Outlined.ChevronRight, null) }
                             GroupDivider()
@@ -482,7 +531,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         if (ui.clipboard.isNotEmpty() || ui.link.isNotEmpty()) {
-                            SectionHeading("From your Mac", "Ready to use on your phone")
+                            SectionHeading("From your computer", "Ready to use on your phone")
                             if (ui.clipboard.isNotEmpty()) Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerLow) {
                                 Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                     Text("Clipboard", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
@@ -527,23 +576,23 @@ class MainActivity : ComponentActivity() {
                     2 -> {
                         SectionHeading("Settings", "Make Bridge yours")
                         val settingsGroups = mapOf(
-                            "Your Mac" to "${paired.name} ${ui.status} Disconnect Connect",
+                            "Your computer" to "${paired.name} ${ui.status} Disconnect Connect",
                             "This phone" to "${Build.MANUFACTURER} ${Build.MODEL} Android ${Build.VERSION.RELEASE} Storage available capacity remaining space",
                             "Phone files" to "Choose Change shared folder Browse download Sharing selected folder No folder shared Stop sharing folder",
                             "Appearance" to "Theme ${appearance.label} AMOLED black Pure black backgrounds in dark mode",
                             "Clipboard & privacy" to "Clipboard history Optional · memory only · 100 entries bridge clipboardHistory Session clipboard history View history Text from this session Privacy & retention Encrypted. No account or cloud relay. Clipboard history stays in memory. Unpinned text expires after 24 hours; pins and all other entries disappear when Bridge’s process ends. Suspected secrets are excluded, even when sending is approved. History clears when disabled or unpaired. Files transfer directly between your paired devices.",
-                            "Notifications" to "Apps shared with Mac Choose which apps can share notifications",
-                            "Find phone" to "Use flashlight Flash while your Mac rings this phone findPhoneFlashlight Use flashlight when finding this phone Optional camera permission is requested when you enable this.",
-                            "Connection" to "Connection help Wi-Fi hotspot manual address Mac IP address Port Save reconnect discovery certificate",
+                            "Notifications" to "Apps shared with computer Choose which apps can share notifications",
+                            "Find phone" to "Use flashlight Flash while your computer rings this phone findPhoneFlashlight Use flashlight when finding this phone Optional camera permission is requested when you enable this.",
+                            "Connection" to "Connection help Wi-Fi hotspot manual address computer IP address Port Save reconnect discovery certificate",
                             "Support" to "Report a bug Tell us what went wrong bug Suggest a feature Share an idea for Bridge feature Buy me a coffee Support independent development https://buymeacoffee.com/mlwn About the creator Made by MLWN · mlwn.in https://mlwn.in"
                         )
-                        val permissionKeywords = "Permissions Notification access Share phone notifications with your Mac Local network Allow Bridge to connect Bridge notifications connection transfer status restricted settings"
+                        val permissionKeywords = "Permissions Notification access Share phone notifications with your computer Local network Allow Bridge to connect Bridge notifications connection transfer status restricted settings"
                         val settingsSearchIndex = settingsGroups.map { (title, words) -> "$title $words" } + listOf(permissionKeywords, "Unpair ${paired.name}")
                         OutlinedTextField(settingsQuery, { settingsQuery = it }, modifier = Modifier.fillMaxWidth(), singleLine = true,
                             placeholder = { Text("Search settings") }, leadingIcon = { Icon(Icons.Outlined.Search, null) },
                             trailingIcon = { if (settingsQuery.isNotEmpty()) IconButton(onClick = { settingsQuery = "" }) { Icon(Icons.Outlined.Close, "Clear search") } })
                         if (settingsSearchIndex.none { settingsMatches(settingsQuery, it) }) Text("No settings match your search.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        SearchSettingsGroup(settingsQuery, "Your Mac", settingsGroups.getValue("Your Mac")) {
+                        SearchSettingsGroup(settingsQuery, "Your computer", settingsGroups.getValue("Your computer")) {
                             SettingsRow(Icons.Outlined.LaptopMac, paired.name, ui.status)
                             FlowRow(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 if (ui.connected) FilledTonalButton(onClick = { disconnect() }) { Text("Disconnect") }
@@ -566,7 +615,7 @@ class MainActivity : ComponentActivity() {
                                 val document = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, android.provider.DocumentsContract.getTreeDocumentId(tree))
                                 contentResolver.query(document, arrayOf(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
                             }.getOrNull() } }
-                            SettingsRow(Icons.Outlined.Folder, if (folderUri == null) "Choose shared folder" else "Change shared folder", if (folderUri == null) "No folder shared · Choose one to browse from your Mac" else "Sharing ${folderName ?: "selected folder"} · Browse and download from your Mac", onClick = { phoneFilesFolder.launch(folderUri) }) { Icon(Icons.Outlined.ChevronRight, null) }
+                            SettingsRow(Icons.Outlined.Folder, if (folderUri == null) "Choose shared folder" else "Change shared folder", if (folderUri == null) "No folder shared · Choose one to browse from your computer" else "Sharing ${folderName ?: "selected folder"} · Browse and download from your computer", onClick = { phoneFilesFolder.launch(folderUri) }) { Icon(Icons.Outlined.ChevronRight, null) }
                             if (folderUri != null) TextButton(onClick = {
                                 val prefs = getSharedPreferences("bridge", MODE_PRIVATE)
                                 prefs.getString("phoneFilesTree", null)?.let { runCatching { contentResolver.releasePersistableUriPermission(Uri.parse(it), Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
@@ -603,8 +652,8 @@ class MainActivity : ComponentActivity() {
                         }
                         if (settingsMatches(settingsQuery, permissionKeywords)) permissionCard(revision)
                         SearchSettingsGroup(settingsQuery, "Notifications", settingsGroups.getValue("Notifications")) {
-                            SettingsRow(Icons.Outlined.Apps, "Apps shared with Mac", "Choose which apps can share notifications", onClick = { showApps = !showApps }) { Icon(if (showApps) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null) }
-                            if (Build.VERSION.SDK_INT >= 36) {
+                            SettingsRow(Icons.Outlined.Apps, "Apps shared with computer", "Choose which apps can share notifications", onClick = { showApps = !showApps }) { Icon(if (showApps) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null) }
+                            if ((Build.VERSION.SDK_INT >= 36 && Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1)) {
                                 GroupDivider()
                                 var liveConnection by remember { mutableStateOf(getSharedPreferences("bridge", MODE_PRIVATE).getBoolean("liveConnection", true)) }
                                 SettingsRow(Icons.Outlined.Link, "Live connection", "Show connection status on supported system surfaces") {
@@ -620,7 +669,7 @@ class MainActivity : ComponentActivity() {
                         val findPreferences = remember { getSharedPreferences("bridge", MODE_PRIVATE) }
                         var findFlashlight by remember(permissionsRevision) { mutableStateOf(findPreferences.getBoolean("findPhoneFlashlight", false)) }
                         SearchSettingsGroup(settingsQuery, "Find phone", settingsGroups.getValue("Find phone")) {
-                            SettingsRow(Icons.Outlined.FlashlightOn, "Use flashlight", "Flash while your Mac rings this phone") {
+                            SettingsRow(Icons.Outlined.FlashlightOn, "Use flashlight", "Flash while your computer rings this phone") {
                                 Switch(checked = findFlashlight, onCheckedChange = { enabled ->
                                     if (enabled && ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
                                         flashlightPermission.launch(Manifest.permission.CAMERA)
@@ -632,7 +681,7 @@ class MainActivity : ComponentActivity() {
                         SearchSettingsGroup(settingsQuery, "Connection", settingsGroups.getValue("Connection")) {
                             SettingsRow(Icons.Outlined.Wifi, "Connection help", "Wi-Fi, hotspot and manual address", onClick = { showAdvanced = !showAdvanced }) { Icon(if (showAdvanced) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null) }
                             if (showAdvanced) Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Text("Keep both devices on the same Wi-Fi or phone hotspot. Open Bridge on your Mac if it is offline.", style = MaterialTheme.typography.bodyMedium)
+                                Text("Keep both devices on the same Wi-Fi or phone hotspot. Open Bridge on your computer if it is offline.", style = MaterialTheme.typography.bodyMedium)
                                 AddressOverride(paired) { permissionsRevision++ }
                             }
                         }
@@ -677,11 +726,11 @@ class MainActivity : ComponentActivity() {
                     val outgoing = if (validLink(draft.trim())) draft.trim() else draft
                     if (ClipboardProtection.reason(outgoing) != null) showComposer = false
                     requestTextSend(outgoing, asLink = validLink(outgoing), sent = { if (text == draft) text = ""; showComposer = false })
-                }) { Icon(Icons.AutoMirrored.Outlined.Send, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(if (validLink(text.trim())) "Send link to Mac" else "Send text to Mac") }
-                if (!ui.connected) Text("Reconnect to your Mac to send.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }) { Icon(Icons.AutoMirrored.Outlined.Send, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(if (validLink(text.trim())) "Send link to computer" else "Send text to computer") }
+                if (!ui.connected) Text("Reconnect to your computer to send.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        if (confirmUnpair) AlertDialog(onDismissRequest = { confirmUnpair = false }, title = { Text("Unpair your Mac?") }, text = { Text("You’ll need to scan its code again to reconnect.") },
+        if (confirmUnpair) AlertDialog(onDismissRequest = { confirmUnpair = false }, title = { Text("Unpair your computer?") }, text = { Text("You’ll need to scan its code again to reconnect.") },
             confirmButton = { TextButton(onClick = { confirmUnpair = false; unpair() }) { Text("Unpair") } }, dismissButton = { TextButton(onClick = { confirmUnpair = false }) { Text("Cancel") } })
     }
     @Composable private fun PendingShare(ui: UIState, onSent: () -> Unit) {
@@ -690,7 +739,7 @@ class MainActivity : ComponentActivity() {
                 Text("Ready to send", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text(if (sharedFiles.isNotEmpty()) "${sharedFiles.size} files selected" else sharedText.take(160), maxLines = 3, overflow = TextOverflow.Ellipsis)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(enabled = ui.connected || sharedFiles.isNotEmpty(), onClick = { if (sendSharedContent()) onSent() }) { Text("Send to Mac") }
+                    Button(enabled = ui.connected || sharedFiles.isNotEmpty(), onClick = { if (sendSharedContent()) onSent() }) { Text("Send to computer") }
                     TextButton(onClick = { clearSharedContent() }) { Text("Cancel") }
                 }
             }
@@ -703,7 +752,7 @@ class MainActivity : ComponentActivity() {
                                         Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = RoundedCornerShape(12.dp)) { Icon(if (transfer.incoming) Icons.Outlined.Download else Icons.Outlined.Upload, null, Modifier.padding(10.dp), tint = MaterialTheme.colorScheme.onSecondaryContainer) }
                                         Column(Modifier.weight(1f)) {
                                             Text(transfer.name, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                            Text(if (transfer.incoming) "From your Mac" else "To your Mac", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text(if (transfer.incoming) "From your computer" else "To your computer", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
                                     Text("${android.text.format.Formatter.formatFileSize(this@MainActivity, transfer.size)} · ${transfer.status}" + (if (transfer.bytesPerSecond > 0 && (transfer.lastProgressElapsed == 0L || transferClock - transfer.lastProgressElapsed <= 5000 || transfer.status == "Complete")) " · %.1f MB/s".format(transfer.bytesPerSecond / 1_000_000) else ""), color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -714,6 +763,7 @@ class MainActivity : ComponentActivity() {
                                         Text("${(transfer.progress.coerceIn(0f, 1f) * 100).toInt()}%" + (if (stalled) " · Waiting for data…" else remaining?.let { " · $it" } ?: " · Estimating time…"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                     if (transfer.failureReason.isNotEmpty() && transfer.status in listOf("Paused", "Retrying")) Text(transfer.failureReason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    transfer.timings.summary()?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                                     if (transfer.path != null || transfer.status !in listOf("Complete", "Cancelled", "Failed")) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                         if (!transfer.incoming && transfer.status !in listOf("Complete", "Cancelled", "Failed", "Preparing")) {
                                             if (transfer.status == "Paused") FilledTonalButton(onClick = { queueAction(transfer.id, "resume") }) { Text("Retry") }
@@ -760,17 +810,17 @@ class MainActivity : ComponentActivity() {
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("A little closer.", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
-                    Text("Your phone and Mac, connected privately. Files, clipboard and notifications in one place.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Your phone and computer, connected privately. Files, clipboard and notifications in one place.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                    PairingStep("1", "Open Bridge on your Mac", "Click its menu-bar icon to see the QR code.")
-                    PairingStep("2", "Scan and approve", "Scan below, then approve your phone on the Mac.")
+                    PairingStep("1", "Open Bridge on your computer", "Open its pairing screen to see the QR code.")
+                    PairingStep("2", "Scan and approve", "Scan below, then approve your phone on the computer.")
                 }
                 if (ui.error.isNotEmpty()) ErrorBanner(ui.error)
                 if (ui.pairing) Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.large) {
                     Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         LinearProgressIndicator(Modifier.fillMaxWidth())
-                        Text("Approve on your Mac", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text("Approve on your computer", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Text(ui.status, style = MaterialTheme.typography.bodyMedium)
                         TextButton(onClick = { disconnect() }) { Text("Cancel pairing") }
                     }
@@ -779,7 +829,7 @@ class MainActivity : ComponentActivity() {
                     TextButton(onClick = { showManual = !showManual }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text(if (showManual) "Hide pairing link" else "Have a pairing link?") }
                     if (showManual) {
                         OutlinedTextField(value = manualURL, onValueChange = onURL, modifier = Modifier.fillMaxWidth(), label = { Text("Pairing link") }, placeholder = { Text("bridge://pair?…") }, maxLines = 4, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
-                        OutlinedButton(enabled = manualURL.isNotBlank(), onClick = onPair, modifier = Modifier.fillMaxWidth()) { Text("Connect to Mac") }
+                        OutlinedButton(enabled = manualURL.isNotBlank(), onClick = onPair, modifier = Modifier.fillMaxWidth()) { Text("Connect to computer") }
                     }
                 }
                 TextButton(onClick = onSupport, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Need help? Report a setup problem") }
@@ -827,16 +877,17 @@ class MainActivity : ComponentActivity() {
     @Composable private fun permissionCard(revision: Int) {
         val notificationsAllowed = remember(revision) { notificationPermissionGranted() }
         SettingsGroup("Permissions") {
-            SettingsRow(Icons.Outlined.NotificationsActive, "Notification access", if (notificationsAllowed) "Enabled · tap to manage" else "Share phone notifications with your Mac", onClick = { notificationSettings() }) { Icon(Icons.Outlined.ChevronRight, null) }
+            SettingsRow(Icons.Outlined.NotificationsActive, "Notification access", if (notificationsAllowed) "Enabled · tap to manage" else "Share phone notifications with your computer", onClick = { notificationSettings() }) { Icon(Icons.Outlined.ChevronRight, null) }
             if (!localPermissionGranted()) {
                 GroupDivider()
-                SettingsRow(Icons.Outlined.Wifi, "Local network", "Allow Bridge to connect to your Mac", onClick = { withConnectionPermissions { permissionsRevision++ } }) { Icon(Icons.Outlined.ChevronRight, null) }
+                SettingsRow(Icons.Outlined.Wifi, "Local network", "Allow Bridge to connect to your computer", onClick = { withConnectionPermissions { permissionsRevision++ } }) { Icon(Icons.Outlined.ChevronRight, null) }
             }
             if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 GroupDivider()
                 SettingsRow(Icons.Outlined.Notifications, "Bridge notifications", "Show connection and transfer status", onClick = { permissionRequest.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS)) }) { Icon(Icons.Outlined.ChevronRight, null) }
             }
-            if (!notificationsAllowed) Text("If Android blocks access: App info → menu → Allow restricted settings.", Modifier.padding(horizontal = 16.dp).padding(bottom = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (Build.VERSION.SDK_INT < 31) Text("On Android 10–11, notifications can be viewed and dismissed here. Use your phone for notification actions and replies.", Modifier.padding(horizontal = 16.dp).padding(bottom = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (!notificationsAllowed && Build.VERSION.SDK_INT >= 33) Text("If Android blocks access: App info → menu → Allow restricted settings.", Modifier.padding(horizontal = 16.dp).padding(bottom = 16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
     @Composable private fun AppExclusions() {
@@ -863,9 +914,9 @@ class MainActivity : ComponentActivity() {
     @Composable private fun AddressOverride(paired: Pairing, onSave: () -> Unit) {
         var host by remember(paired.host) { mutableStateOf(paired.host) }
         var port by remember(paired.port) { mutableStateOf(paired.port.toString()) }
-        Text("Manual Mac address", style = MaterialTheme.typography.titleMedium)
-        Text("Use the IP and port shown by your Mac when discovery is unavailable. The Mac’s certificate is still verified.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        OutlinedTextField(host, { host = it }, label = { Text("Mac IP address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Text("Manual computer address", style = MaterialTheme.typography.titleMedium)
+        Text("Use the IP and port shown by your computer when discovery is unavailable. The computer’s certificate is still verified.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        OutlinedTextField(host, { host = it }, label = { Text("computer IP address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(port, { port = it }, label = { Text("Port") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true, modifier = Modifier.fillMaxWidth())
         OutlinedButton(onClick = {
             val number = port.toIntOrNull()

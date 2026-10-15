@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Exercise actual whole-bundle replacement and rollback in temporary directories."""
 import os
+import sys
 import pathlib
 import subprocess
 import tempfile
 
 root = pathlib.Path(__file__).resolve().parent.parent
-source = root / 'dist/Bridge.app'
+source = pathlib.Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else root / 'dist/macos/AppleSilicon/Bridge.app'
 helper = root / 'scripts/install-mac-bundle.zsh'
 with tempfile.TemporaryDirectory(prefix='bridge-install-test-') as directory:
     work = pathlib.Path(directory)

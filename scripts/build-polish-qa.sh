@@ -9,14 +9,14 @@ open('.build/ui-polish/BridgeApp.swift', 'w').write(s)
 PY
 sources=(mac/Sources/*.swift)
 sources=(${sources:#mac/Sources/BridgeApp.swift})
-xcrun swiftc -swift-version 5 -sdk "$(xcrun --show-sdk-path)" -target arm64-apple-macos27.0 \
+xcrun swiftc -swift-version 5 -sdk "$(xcrun --show-sdk-path)" -target $(uname -m)-apple-macos13.0 \
   -module-cache-path .build/module-cache "${sources[@]}" .build/ui-polish/BridgeApp.swift \
   mac/Preview/PolishQA.swift -o dist/qa/BridgeUIQA.app/Contents/MacOS/BridgeUIQA
 cat > dist/qa/BridgeUIQA.app/Contents/Info.plist <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>dev.bridge.uiqa</string><key>CFBundleName</key><string>BridgeUIQA</string>
 <key>CFBundleExecutable</key><string>BridgeUIQA</string><key>CFBundlePackageType</key><string>APPL</string>
-<key>LSMinimumSystemVersion</key><string>27.0</string></dict></plist>
+<key>LSMinimumSystemVersion</key><string>13.0</string></dict></plist>
 PLIST
 codesign --force --sign - dist/qa/BridgeUIQA.app
 

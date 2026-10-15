@@ -24,7 +24,7 @@ import androidx.compose.ui.unit.dp
     val storageUsed = info?.let { (it.storageTotal - it.storageFree).coerceAtLeast(0) } ?: 0
     val storageFraction by animateFloatAsState(
         targetValue = if (info != null && info.storageTotal > 0) storageUsed.toFloat() / info.storageTotal else 0f,
-        animationSpec = tween(350), label = "Mac storage")
+        animationSpec = tween(350), label = "computer storage")
     Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
         Column(Modifier.fillMaxWidth().animateContentSize(tween(220)).padding(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -36,10 +36,10 @@ import androidx.compose.ui.unit.dp
                     Text(if (ui.connected) "${if (ui.status.contains("USB")) "USB" else "Wi-Fi"} · Encrypted connection" else ui.status,
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if (!ui.connected) FilledTonalIconButton(onClick = reconnect) { Icon(Icons.Outlined.Sync, "Reconnect to Mac") }
+                if (!ui.connected) FilledTonalIconButton(onClick = reconnect) { Icon(Icons.Outlined.Sync, "Reconnect to computer") }
             }
             if (info == null) {
-                Text(if (ui.connected) "Getting your Mac’s details…" else "Connect to see battery, storage and system details.",
+                Text(if (ui.connected) "Getting your computer’s details…" else "Connect to see battery, storage and system details.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -54,7 +54,7 @@ import androidx.compose.ui.unit.dp
                         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Icon(Icons.Outlined.Memory, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
                             Text(if (info.memoryTotal > 0) bytes(info.memoryTotal) else "—", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                            Text("Unified memory", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Memory", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }

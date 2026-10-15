@@ -7,6 +7,8 @@ struct RenderPreview {
         let output = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "dist/qa", isDirectory: true)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         let model = BridgeModel(preview: true)
+        try render(BridgeCompanionDownload(), name: "mac-download-light", scheme: .light, output: output)
+        try render(BridgeCompanionDownload(), name: "mac-download-dark", scheme: .dark, output: output)
         model.paired = nil
         model.address = "192.168.1.20"; model.localPort = 51234
         model.pairingURL = "bridge://pair?host=192.168.1.20&port=51234&fingerprint=preview&token=preview-only&name=Mac"

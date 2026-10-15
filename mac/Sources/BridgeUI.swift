@@ -103,10 +103,10 @@ struct BridgeFeedbackBar: View {
     var body: some View {
         if !model.notice.isEmpty {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: "info.circle").foregroundStyle(.secondary)
+                Image(bridgeSymbol: "info.circle").foregroundStyle(.secondary)
                 Text(model.notice).font(.callout).lineLimit(3).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
-                Button { model.notice = "" } label: { Image(systemName: "xmark") }
+                Button { model.notice = "" } label: { Image(bridgeSymbol: "xmark") }
                     .buttonStyle(.plain).help("Dismiss message").accessibilityLabel("Dismiss message")
             }.padding(.horizontal, BridgeUI.margin).padding(.vertical, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -134,7 +134,7 @@ struct BridgeNotificationActionButton: View {
     let perform: () -> Void
     var body: some View {
         Button(action: perform) {
-            if let symbol = NotificationActionAppearance.symbol(action.title) { Image(systemName: symbol).frame(minWidth: 18) }
+            if let symbol = NotificationActionAppearance.symbol(action.title) { Image(bridgeSymbol: symbol).frame(minWidth: 18) }
             else { Text(action.title).lineLimit(2) }
         }.help(action.title).accessibilityLabel(action.title)
     }

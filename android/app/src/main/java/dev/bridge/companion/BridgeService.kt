@@ -63,6 +63,15 @@ class BridgeService : Service() {
     private var recoveryJob: Job? = null
     private var heartbeatJob: Job? = null
     @Volatile private var usingUSB = false
+    @Volatile private var usingDirect = false
+    @Volatile private var directSupported = false
+    @Volatile private var speedProbeSupported = false
+    @Volatile private var directRequest: DirectSession? = null
+    @Volatile private var directEndpoint: Pair<String, Int>? = null
+    private val directHotspot by lazy { DirectHotspot(this, scope) }
+    private var directTimeout: Job? = null
+    @Volatile private var speedProbe: SpeedProbe? = null
+    private var speedProbeTimeout: Job? = null
     private val sendLock = Any()
     private data class QueuedMessage(val message: Message, val connection: SSLSocket)
     private val sendQueue = Channel<QueuedMessage>(128)
@@ -101,8 +110,8 @@ class BridgeService : Service() {
         }
     }
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) { if (authenticated && !usingUSB) { runCatching { socket?.close() } } }
-        override fun onLost(network: Network) { if (!usingUSB) runCatching { socket?.close() } }
+        override fun onAvailable(network: Network) { if (authenticated && !usingUSB && directRequest == null) { runCatching { socket?.close() } } }
+        override fun onLost(network: Network) { if (!usingUSB && directRequest == null) runCatching { socket?.close() } }
     }
     override fun onCreate() {
         super.onCreate(); secure = SecureStore(this); pairing = secure.load(); instance = this
@@ -137,9 +146,9 @@ class BridgeService : Service() {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(CHANNEL, "Bridge connection status", NotificationManager.IMPORTANCE_LOW).apply {
             setSound(null, null); enableVibration(false); setShowBadge(false)
-            description = "Quiet status-bar indicator while Bridge connects to your Mac."
+            description = "Quiet status-bar indicator while Bridge connects to your computer."
         })
-        manager.createNotificationChannel(NotificationChannel("handoff", "Links from your Mac", NotificationManager.IMPORTANCE_DEFAULT))
+        manager.createNotificationChannel(NotificationChannel("handoff", "Links from your computer", NotificationManager.IMPORTANCE_DEFAULT))
         manager.createNotificationChannel(NotificationChannel("files", "File transfers", NotificationManager.IMPORTANCE_DEFAULT))
         recoveryJob = scope.launch {
             // Preparation copies belong to a single live session. Remove any
@@ -164,7 +173,7 @@ class BridgeService : Service() {
                 // Never replace a working trusted Mac merely because another app
                 // handed us a pairing URI. Unpair explicitly before enrolling again.
                 if (secure.load() != null) {
-                    showError("Unpair your current Mac before pairing another device")
+                    showError("Unpair your current computer before pairing another device")
                     return START_STICKY
                 }
                 try { pairing = Pairing.fromURL(intent.getStringExtra("url").orEmpty()) }
@@ -206,7 +215,7 @@ class BridgeService : Service() {
                 val certificate = chain?.firstOrNull() ?: throw java.security.cert.CertificateException("No server certificate")
                 certificate.checkValidity()
                 if (!MessageDigest.isEqual(sha256(certificate.encoded).toByteArray(), peer.fingerprint.toByteArray()))
-                    throw java.security.cert.CertificateException("Mac identity does not match. Pair again.")
+                    throw java.security.cert.CertificateException("computer identity does not match. Pair again.")
             }
         }
         val tls = SSLContext.getInstance("TLS").apply { init(null, arrayOf(trust), SecureRandom()) }
@@ -224,29 +233,74 @@ class BridgeService : Service() {
             return connection
         } catch (error: Exception) { runCatching { connection.close() }; throw error }
     }
-    private fun transfersIdle(): Boolean = incoming.isEmpty() && outgoing.isEmpty() && preparing.isEmpty() && offers.isEmpty()
+    private fun transfersIdle(): Boolean = incoming.isEmpty() && outgoing.isEmpty() && preparing.isEmpty() && offers.isEmpty() && speedProbe == null
+    private fun capabilities() = org.json.JSONArray(PlatformCapabilities.forVersion(
+        Build.VERSION.SDK_INT, if (Build.VERSION.SDK_INT >= 36) Build.VERSION.SDK_INT_FULL else 0))
+    fun startDirectTransfer() {
+        synchronized(outgoingLock) {
+            if (!authenticated || usingUSB || !directSupported || (Build.VERSION.SDK_INT < 36 || Build.VERSION.SDK_INT_FULL < Build.VERSION_CODES_FULL.BAKLAVA_1) || !transfersIdle() || directRequest != null) {
+                showError("Connect over Wi-Fi and finish current transfers or speed checks before starting Direct transfer"); return
+            }
+            val request = DirectSession.create(); directRequest = request; directEndpoint = null
+            BridgeState.state.update { it.copy(directMode = true, directSSID = request.ssid, directStatus = "Preparing direct connection…") }
+            if (!send(Message("directOffer", request.offer()))) { endDirectLocally("Could not contact your Mac"); return }
+            directTimeout?.cancel(); directTimeout = scope.launch {
+                delay(120_000)
+                if (directRequest === request && !usingDirect) endDirectLocally("Direct setup timed out. Reconnect your Mac to its usual Wi-Fi and try again.")
+            }
+        }
+    }
+    fun stopDirectTransfer() {
+        if (directRequest == null) return
+        if (!transfersIdle()) { showError("Finish current transfers or speed checks before ending Direct transfer"); return }
+        val request = directRequest ?: return
+        if (!authenticated) { endDirectLocally("Reconnect your Mac to its usual Wi-Fi"); return }
+        if (!send(Message("directStopRequest", payload("sessionID" to request.id)))) { endDirectLocally("Reconnect your Mac to its usual Wi-Fi"); return }
+        scope.launch { delay(3000); if (directRequest === request) endDirectLocally("Reconnect your Mac to its usual Wi-Fi") }
+    }
+    private fun endDirectLocally(reason: String) {
+        val old = directRequest
+        if (old != null && authenticated) send(Message("directStopped", payload("sessionID" to old.id)))
+        val closeConnection = usingDirect
+        directRequest = null; directEndpoint = null; directTimeout?.cancel()
+        handler.post { directHotspot.stop() }
+        BridgeState.state.update { it.copy(directMode = false, directConnected = false, directSSID = "", directStatus = reason) }
+        if (closeConnection) runCatching { socket?.close() } else pumpQueue()
+    }
+    fun requestSpeedCheck() {
+        if (!authenticated || !speedProbeSupported || !supportsBinary || !transfersIdle() || (directRequest != null && !usingDirect)) {
+            showError("Connect and finish current transfers before running a speed check"); return
+        }
+        send(Message("speedProbeRequest"))
+    }
     private suspend fun connectionLoop() {
         var delayMillis = 1000L
         while (currentCoroutineContext().isActive) {
             val peer = pairing ?: break
+            val directSession = directRequest
+            val directTarget = directEndpoint
+            if (directSession != null && directTarget == null) { delay(300); continue }
             startDiscovery()
             BridgeState.state.update { it.copy(connected = false, pairing = peer.token.isNotEmpty(), macName = peer.name,
-                status = if (peer.token.isNotEmpty()) "Connecting to your Mac…" else "Reconnecting…", error = "") }
+                status = if (peer.token.isNotEmpty()) "Connecting to your computer…" else "Reconnecting…", error = "") }
             var receiver: OrderedReceivePipeline? = null
             try {
-                val destination = destinations[peer.service] ?: (peer.host to peer.port)
+                val directRoute = directSession != null && directTarget != null
+                val destination = if (directRoute) directTarget!! else destinations[peer.service] ?: (peer.host to peer.port)
                 val tls = tlsContext(peer)
                 // Probe the USB reverse port first; certificate pinning also applies here.
-                val wired = runCatching { connectTLS(tls, "127.0.0.1", 38473, 1500) }.getOrNull()
+                val wired = if (!directRoute) runCatching { connectTLS(tls, "127.0.0.1", 38473, 1500) }.getOrNull() else null
                 usingUSB = wired != null
+                usingDirect = directRoute
                 val connection = wired ?: connectTLS(tls, destination.first, destination.second, 7000)
+                if (directRoute && directRequest !== directSession) { connection.close(); error("Direct connection cancelled") }
                 socket = connection; connection.soTimeout = 90_000
                 authenticated = false; supportsBinary = false; receiverProgress = false; supportsTransferFailure = false; notificationRepliesSupported = false; seen.clear()
                 if (peer.token.isNotEmpty()) {
                     write(Message("pairRequest", payload("token" to peer.token, "deviceID" to peer.deviceID,
-                        "credential" to peer.credential, "name" to Build.MODEL, "transport" to if (usingUSB) "usb" else "wifi", "capabilities" to org.json.JSONArray(listOf("binaryFileV1", "receiverProgressV1", "fileFailureV1", "notificationReplyV1")))))
-                    BridgeState.state.update { it.copy(status = "Approve pairing on your Mac") }
-                } else write(Message("auth", payload("deviceID" to peer.deviceID, "credential" to peer.credential, "transport" to if (usingUSB) "usb" else "wifi", "capabilities" to org.json.JSONArray(listOf("binaryFileV1", "receiverProgressV1", "fileFailureV1", "notificationReplyV1")))))
+                        "credential" to peer.credential, "name" to Build.MODEL, "transport" to if (usingUSB) "usb" else if (directRoute) "direct" else "wifi", "directSessionID" to (if (directRoute) directSession?.id.orEmpty() else ""), "capabilities" to capabilities())))
+                    BridgeState.state.update { it.copy(status = "Approve pairing on your computer") }
+                } else write(Message("auth", payload("deviceID" to peer.deviceID, "credential" to peer.credential, "transport" to if (usingUSB) "usb" else if (directRoute) "direct" else "wifi", "directSessionID" to (if (directRoute) directSession?.id.orEmpty() else ""), "capabilities" to capabilities())))
                 receiver = OrderedReceivePipeline(scope, consume = { receive(it) }, failed = {
                     if (socket === connection) runCatching { connection.close() }
                 })
@@ -256,29 +310,35 @@ class BridgeService : Service() {
                     lastSeen = SystemClock.elapsedRealtime()
                     if (!authenticated) {
                         require(message.type == "authAccepted" || message.type == "pairAccepted") {
-                            message.payload.optString("message", "Mac rejected the connection. Unpair and scan a fresh code.")
+                            message.payload.optString("message", "computer rejected the connection. Unpair and scan a fresh code.")
                         }
                         require((peer.token.isEmpty() && message.type == "authAccepted") || (peer.token.isNotEmpty() && message.type == "pairAccepted"))
                         supportsBinary = message.payload.optJSONArray("capabilities")?.let { array -> (0 until array.length()).any { array.optString(it) == "binaryFileV1" } } ?: false
+                        directSupported = message.payload.optJSONArray("capabilities")?.let { array -> (0 until array.length()).any { array.optString(it) == "directHotspotV1" } } ?: false
+                        speedProbeSupported = message.payload.optJSONArray("capabilities")?.let { array -> (0 until array.length()).any { array.optString(it) == "speedProbeV1" } } ?: false
                         receiverProgress = message.payload.optJSONArray("capabilities")?.let { array -> (0 until array.length()).any { array.optString(it) == "receiverProgressV1" } } ?: false
                         supportsTransferFailure = message.payload.optJSONArray("capabilities")?.let { array -> (0 until array.length()).any { array.optString(it) == "fileFailureV1" } } ?: false
-                        notificationRepliesSupported = message.payload.optJSONArray("capabilities")?.let { array -> (0 until array.length()).any { array.optString(it) == "notificationReplyV1" } } ?: false
-                        val stored = peer.copy(token = "", host = destination.first, port = destination.second)
+                        notificationRepliesSupported = Build.VERSION.SDK_INT >= 31 && (message.payload.optJSONArray("capabilities")?.let { array -> (0 until array.length()).any { array.optString(it) == "notificationReplyV1" } } ?: false)
+                        val stored = peer.copy(token = "", host = if (directRoute) peer.host else destination.first, port = if (directRoute) peer.port else destination.second)
                         synchronized(outgoingLock) {
                             check(pairing?.deviceID == peer.deviceID && pairing?.credential == peer.credential && socket === connection && connectionJob?.isActive == true) { "Pairing revoked or connection replaced" }
+                            check(!directRoute || directRequest === directSession) { "Direct connection cancelled" }
                             secure.save(stored); pairing = stored; authenticated = true
                         }
                         delayMillis = 1000
                         getSharedPreferences("bridge", MODE_PRIVATE).edit().putBoolean("enabled", true).apply()
-                        BridgeState.state.update { it.copy(status = if (usingUSB) "Connected via USB" else "Connected", connected = true, pairing = false, macName = stored.name, error = "") }
+                        if (usingDirect) directTimeout?.cancel()
+                        BridgeState.state.update { it.copy(status = if (usingUSB) "Connected via USB" else if (usingDirect) "Connected via Direct Wi-Fi" else "Connected", connected = true, pairing = false, macName = stored.name, error = "",
+                            directSupported = directSupported && (Build.VERSION.SDK_INT >= 36 && Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1), directConnected = usingDirect,
+                            directStatus = if (usingDirect) "Connected directly to your Mac" else it.directStatus, speedCheckSupported = speedProbeSupported && supportsBinary) }
                         liveDismissed = false
                         getSystemService(NotificationManager::class.java).notify(1, connectionNotification("Connected to ${stored.name}"))
                         heartbeatJob?.cancel(); heartbeatJob = scope.launch { while (isActive && authenticated) { delay(15_000); pumpQueue(); if (SystemClock.elapsedRealtime() - lastSeen > 50_000) { connection.close(); break }; write(Message("ping")); sendDeviceInfo(); sendBattery() } }
                         // Upgrade only between transfers. Never interrupt a live file to change routes.
-                        if (!usingUSB) scope.launch {
+                        if (!usingUSB && directRequest == null) scope.launch {
                             while (isActive && authenticated && socket === connection && !usingUSB) {
                                 delay(4000)
-                                if (transfersIdle()) {
+                                if (transfersIdle() && directRequest == null) {
                                     val probe = runCatching { connectTLS(tls, "127.0.0.1", 38473, 1000) }.getOrNull()
                                     if (probe != null) {
                                         probe.close()
@@ -298,11 +358,13 @@ class BridgeService : Service() {
                 if (currentCoroutineContext().isActive) showError(error.message ?: "Connection interrupted")
             } finally {
                 receiver?.stop(); phoneFiles.reset()
-                authenticated = false; usingUSB = false; heartbeatJob?.cancel(); runCatching { socket?.close() }; socket = null
+                authenticated = false; usingUSB = false; usingDirect = false; heartbeatJob?.cancel(); runCatching { socket?.close() }; socket = null
+                speedProbe = null; speedProbeTimeout?.cancel()
                 while (sendQueue.tryReceive().isSuccess) { /* Never carry clipboard or commands into the next session. */ }
                 cleanupTransfers(); handler.post { stopRing(); if (!authenticated) media.stop() }
-                BridgeState.state.update { it.copy(connected = false, pairing = false, status = "Disconnected") }
-                getSystemService(NotificationManager::class.java).notify(1, connectionNotification("Waiting for your Mac"))
+                BridgeState.state.update { it.copy(connected = false, pairing = false, status = "Disconnected", directConnected = false,
+                    speedCheckRunning = false, speedCheckStatus = if (it.speedCheckRunning) "Speed check interrupted" else it.speedCheckStatus) }
+                getSystemService(NotificationManager::class.java).notify(1, connectionNotification("Waiting for your computer"))
             }
             if (pairing?.token?.isNotEmpty() == true) break
             delay(delayMillis); delayMillis = (delayMillis * 2).coerceAtMost(15_000)
@@ -338,6 +400,55 @@ class BridgeService : Service() {
         write(Message("ack", payload("messageID" to message.id)))
         val body = message.payload
         when (message.type) {
+            "directReady" -> {
+                val request = directRequest
+                if (request != null && body.optString("sessionID") == request.id && directHotspot.session == null) {
+                    handler.post {
+                        if (directRequest !== request) return@post
+                        if (!transfersIdle()) { endDirectLocally("Finish current transfers before starting Direct transfer"); return@post }
+                        directHotspot.start(request, state = { status -> BridgeState.state.update { it.copy(directStatus = status) } }, endpoint = { endpoint ->
+                            if (directRequest === request && !usingDirect && directEndpoint != endpoint) {
+                                directEndpoint = endpoint
+                                runCatching { socket?.close() }
+                            }
+                        }, failed = { reason -> endDirectLocally(reason) })
+                    }
+                }
+            }
+            "directRejected" -> {
+                if (!usingDirect) endDirectLocally(body.optString("message", "Direct transfer unavailable"))
+                else showError(body.optString("message", "Finish current transfers first"))
+            }
+            "directEndRequest" -> stopDirectTransfer()
+            "directStopReady" -> if (body.optString("sessionID") == directRequest?.id) endDirectLocally("Reconnect your Mac to its usual Wi-Fi")
+            "speedProbeOffer" -> {
+                val id = body.optString("transferID")
+                if (!speedProbeSupported || !supportsBinary || !transfersIdle() || (directRequest != null && !usingDirect) ||
+                    body.optLong("size") != SPEED_PROBE_BYTES || runCatching { UUID.fromString(id) }.isFailure) {
+                    write(Message("speedProbeRejected", payload("transferID" to id))); return
+                }
+                speedProbe = SpeedProbe(id, SPEED_PROBE_BYTES)
+                BridgeState.state.update { it.copy(speedCheckRunning = true, speedCheckStatus = "Checking connection speed…") }
+                speedProbeTimeout?.cancel(); speedProbeTimeout = scope.launch {
+                    delay(45_000)
+                    if (speedProbe?.id == id) { speedProbe = null; send(Message("speedProbeCancel", payload("transferID" to id)))
+                        BridgeState.state.update { it.copy(speedCheckRunning = false, speedCheckStatus = "Speed check timed out") }; pumpQueue() }
+                }
+                write(Message("speedProbeAccepted", payload("transferID" to id)))
+            }
+            "speedProbeUnavailable" -> BridgeState.state.update { it.copy(speedCheckRunning = false, speedCheckStatus = body.optString("message", "Speed check unavailable")) }
+            "speedProbeComplete" -> {
+                val probe = speedProbe ?: return
+                if (body.optString("transferID") != probe.id) return
+                val seconds = probe.finish()
+                write(Message("speedProbeResult", payload("transferID" to probe.id, "receivedBytes" to probe.received, "receiveSeconds" to seconds)))
+                speedProbe = null; speedProbeTimeout?.cancel()
+                BridgeState.state.update { it.copy(speedCheckRunning = false, speedCheckStatus = "Received 32 MiB without saving a file · %.1f MB/s".format(probe.size / seconds / 1_000_000)) }
+                pumpQueue()
+            }
+            "speedProbeCancel" -> if (speedProbe?.id == body.optString("transferID")) {
+                speedProbe = null; speedProbeTimeout?.cancel(); BridgeState.state.update { it.copy(speedCheckRunning = false, speedCheckStatus = "Speed check cancelled") }; pumpQueue()
+            }
             "deviceInfo" -> {
                 BridgeState.state.update { it.copy(macInfo = parseMacDeviceInfo(body)) }
             }
@@ -378,11 +489,11 @@ class BridgeService : Service() {
             "clipboard" -> {
                 val text = body.optString("text")
                 if (text.isNotEmpty() && text.toByteArray().size <= Message.MAX_TEXT) {
-                    if (getSharedPreferences("bridge", MODE_PRIVATE).getBoolean("clipboardHistory", false)) ClipboardHistory.session.record(text, pairing?.name ?: "Mac")
+                    if (getSharedPreferences("bridge", MODE_PRIVATE).getBoolean("clipboardHistory", false)) ClipboardHistory.session.record(text, pairing?.name ?: "computer")
                     BridgeState.state.update { it.copy(clipboard = text) }
                     try {
                         getSystemService(ClipboardManager::class.java)
-                            .setPrimaryClip(ClipData.newPlainText("From Mac", text))
+                            .setPrimaryClip(ClipData.newPlainText("From computer", text))
                         getSystemService(NotificationManager::class.java).cancel(2)
                     } catch (_: SecurityException) {
                         BridgeState.state.update { it.copy(error = "Android blocked clipboard sync. You can copy the received text in Clipboard.") }
@@ -396,13 +507,16 @@ class BridgeService : Service() {
                     val openIntent = Intent(Intent.ACTION_VIEW, Uri.parse(link)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     val open = PendingIntent.getActivity(this, 0, openIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
                     val notification = NotificationCompat.Builder(this, "handoff").setSmallIcon(R.drawable.ic_status)
-                        .setContentTitle("Open link from your Mac?")
+                        .setContentTitle("Open link from your computer?")
                         .setContentText("${Uri.parse(link).host} · Tap to open")
                         .setContentIntent(open).addAction(0, "Open link", open).setAutoCancel(true).build()
                     runCatching { getSystemService(NotificationManager::class.java).notify("bridge.link", 3, notification) }
                 }
             }
-            "fileOffer" -> offer(body)
+            "fileOffer" -> {
+                if (speedProbe != null || (directRequest != null && !usingDirect)) write(Message("fileReject", payload("transferID" to body.optString("transferID"))))
+                else offer(body)
+            }
             "fileAccept" -> startSending(body.optString("transferID"), body.optString("encoding") == "binary-v1")
             "fileReject" -> {
                 val id = body.optString("transferID")
@@ -410,7 +524,7 @@ class BridgeService : Service() {
                     if (outgoing.containsKey(id)) {
                         suppressedQueueIDs.add(id)
                         outgoing.remove(id)?.job?.cancel()
-                        val reason = "Mac could not accept this file. Check Mac Bridge, then retry."
+                        val reason = "Your computer could not accept this file. Check Bridge on your computer, then retry."
                         runCatching { fileQueue?.pauseAfterRejection(id, reason) }.onFailure { runCatching { fileQueue?.pauseSnapshot(id) }; showError("Queue pause failed: ${it.message}") }
                         BridgeState.updateTransfer(id, "Paused", 0f, failureReason = reason)
                     }
@@ -444,7 +558,7 @@ class BridgeService : Service() {
                 // A receipt must follow the sender's completion frame, never an
                 // offer or a still-running send.
                 val entry = fileQueue?.all()?.firstOrNull { it.id == id }
-                val priorReceipt = status == "Waiting for Mac" && body.optBoolean("alreadyReceived") && entry != null && body.optString("sha256") == entry.hash && body.optLong("size", -1) == entry.size
+                val priorReceipt = status == "Waiting for computer" && body.optBoolean("alreadyReceived") && entry != null && body.optString("sha256") == entry.hash && body.optLong("size", -1) == entry.size
                 if (transfer != null && (status in listOf("Finishing", "Verifying") || priorReceipt)) {
                     outgoing.remove(id)?.job?.cancel()
                     fileQueue?.remove(id)
@@ -540,15 +654,15 @@ class BridgeService : Service() {
                 var uri: Uri? = destination
                 val mediaStore = destination == null
                 try {
-                    check(authenticated) { "Connect to your Mac first" }
+                    check(authenticated) { "Connect to your computer first" }
                     if (mediaStore) {
                         val values = ContentValues().apply {
                             put(MediaStore.Downloads.DISPLAY_NAME, offer.getString("name"))
                             put(MediaStore.Downloads.MIME_TYPE, android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(offer.getString("name").substringAfterLast('.', "").lowercase()) ?: "application/octet-stream")
-                            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/FromMac/")
+                            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/FromBridge/")
                             put(MediaStore.Downloads.IS_PENDING, 1)
                         }
-                        uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("Cannot create Downloads/FromMac file")
+                        uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("Cannot create Downloads/FromBridge file")
                         trackPendingDownload(uri, true)
                     }
                     val target = uri ?: error("No save location")
@@ -659,6 +773,11 @@ class BridgeService : Service() {
             }
     }
     private fun receiveBinaryChunk(body: JSONObject) {
+        speedProbe?.let { probe ->
+            if (body.optString("transferID") == probe.id) {
+                probe.append(probe.id, body.getLong("sequence"), body.opt("data") as? ByteArray ?: error("Invalid speed check data"), System.nanoTime()); return
+            }
+        }
         synchronized(incomingLock) {
             val id = body.optString("transferID"); val transfer = incoming[id] ?: return
             try {
@@ -695,13 +814,14 @@ class BridgeService : Service() {
                 val name = BridgeState.state.value.transfers.firstOrNull { it.id == id }?.name ?: "File"
                 pairing?.fingerprint?.let { receipts.record(it, id, name, transfer.size, transfer.hash) }
                 incoming.remove(id); BridgeState.updateTransfer(id, "Complete", 1f, transfer.uri.toString())
+                android.util.Log.i("BridgeTransfer", "bytes=${transfer.size} encoding=${if (transfer.binary) "binary-v1" else "json"} route=${if (usingUSB) "usb" else if (usingDirect) "direct" else "lan"} ${BridgeState.state.value.transfers.firstOrNull { it.id == id }?.timings?.summary().orEmpty()}")
                 runCatching { write(Message("fileReceived", payload("transferID" to id))) }.onFailure { runCatching { socket?.close() } }
-                fileNotification(id, name, if (transfer.mediaStore) "Saved to Downloads/FromMac" else "Saved to your chosen location", false)
+                fileNotification(id, name, if (transfer.mediaStore) "Saved to Downloads/FromBridge" else "Saved to your chosen location", false)
             } catch (error: Exception) { failTransfer(id, error.message ?: "Cannot save file") }
         }
     }
     fun sendFiles(uris: List<Uri>): Boolean {
-        val peer = pairing?.takeIf { it.token.isEmpty() } ?: run { showError("Pair your Mac first"); return false }
+        val peer = pairing?.takeIf { it.token.isEmpty() } ?: run { showError("Pair your computer first"); return false }
         val queue = fileQueue ?: run { showError("Transfer queue is unavailable"); return false }
         val files = uris.distinct()
         if (files.any { it.scheme != "content" && !(it.scheme == "file" && it.path?.let { path -> FolderArchive.isStagedSource(File(path), cacheDir) } == true) }) {
@@ -776,7 +896,7 @@ class BridgeService : Service() {
     private fun pumpQueue() {
         val queue = fileQueue ?: return
         val connection = socket ?: return
-        if (!authenticated) return
+        if (!authenticated || speedProbe != null || (directRequest != null && !usingDirect)) return
         synchronized(outgoingLock) {
             queue.all().filter { it.peer == pairing?.let(::queuePeer) && !it.paused && it.retryAfter <= System.currentTimeMillis() }.forEach { entry ->
                 if (outgoing.size >= 3 || outgoing.containsKey(entry.id) || suppressedQueueIDs.contains(entry.id)) return@forEach
@@ -786,7 +906,7 @@ class BridgeService : Service() {
                     runCatching { queue.update(entry.copy(paused = true, error = "Queued snapshot is missing")) }; BridgeState.updateTransfer(entry.id, "Paused", failureReason = "Queued snapshot is missing"); return@forEach
                 }
                 outgoing[entry.id] = Outgoing(file, entry.size, supportsBinary)
-                BridgeState.updateTransfer(entry.id, "Waiting for Mac", 0f)
+                BridgeState.updateTransfer(entry.id, "Waiting for computer", 0f)
                 send(Message("fileOffer", payload("transferID" to entry.id, "name" to entry.name, "size" to entry.size, "sha256" to entry.hash, "encoding" to if (supportsBinary) "binary-v1" else "json")))
             }
         }
@@ -910,6 +1030,7 @@ class BridgeService : Service() {
     }
     private fun showError(error: String) { BridgeState.state.update { it.copy(error = error.take(300)) } }
     private fun clearPairing(notify: Boolean = false) {
+        directTimeout?.cancel(); directHotspot.stop(); directRequest = null; directEndpoint = null
         val oldConnection = synchronized(outgoingLock) {
             val previous = if (notify && authenticated) socket else null
             authenticated = false; secure.clear(); pairing = null; preparing.clear(); suppressedQueueIDs.clear()
@@ -932,7 +1053,7 @@ class BridgeService : Service() {
     }
     fun refreshConnectionNotification() {
         liveDismissed = false
-        if (authenticated) getSystemService(NotificationManager::class.java).notify(1, connectionNotification("Connected to ${pairing?.name ?: "your Mac"}"))
+        if (authenticated) getSystemService(NotificationManager::class.java).notify(1, connectionNotification("Connected to ${pairing?.name ?: "your computer"}"))
     }
     private fun connectionNotification(text: String): Notification {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
@@ -946,9 +1067,9 @@ class BridgeService : Service() {
             .setContentText(transfer?.let { "${it.status} · ${it.name}" } ?: text).setContentIntent(open).setDeleteIntent(dismiss).addAction(0, "Disconnect", stop)
             .setCategory(NotificationCompat.CATEGORY_SERVICE).setPriority(NotificationCompat.PRIORITY_LOW)
             .setSilent(true).setShowWhen(false).setBadgeIconType(NotificationCompat.BADGE_ICON_NONE)
-            .setColor(0xFF3468E8.toInt()).setSubText(if (authenticated) "${if (usingUSB) "USB" else "Wi-Fi"} · Encrypted" else "Private device connection")
+            .setColor(0xFF3468E8.toInt()).setSubText(if (authenticated) "${if (usingUSB) "USB" else if (usingDirect) "Direct Wi-Fi" else "Wi-Fi"} · Encrypted" else "Private device connection")
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE).setOngoing(true).setOnlyAlertOnce(true).build()
-        if (Build.VERSION.SDK_INT >= 36) {
+        if ((Build.VERSION.SDK_INT >= 36 && Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1)) {
             val live = Notification.Builder.recoverBuilder(this, standard)
                 .setRequestPromotedOngoing(authenticated && getSharedPreferences("bridge", MODE_PRIVATE).getBoolean("liveConnection", true))
                 .setShortCriticalText(progress?.let { "$it%" } ?: if (authenticated) "Linked" else "")
@@ -984,6 +1105,7 @@ class BridgeService : Service() {
             .onFailure { discovery = null }
     }
     override fun onDestroy() {
+        directTimeout?.cancel(); directHotspot.stop(); directRequest = null; directEndpoint = null
         authenticated = false; sendQueue.close(); scope.cancel(); runCatching { socket?.close() }; cleanupTransfers(); stopRing()
         runCatching { unregisterReceiver(batteryReceiver) }
         runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback) }

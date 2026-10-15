@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Security
 import Network
 
@@ -12,6 +13,18 @@ import Network
             do { try action(); fatalError("FAILED: expected rejection: " + description) }
             catch { count += 1 }
         }
+        let directID = UUID().uuidString
+        let direct = DirectConfiguration(["sessionID": directID, "ssid": "Bridge-1234abcd", "password": String(repeating: "a", count: 24)])!
+        let beacon = try JSONSerialization.jsonObject(with: direct.beacon(port: 12345)) as! [String: Any]
+        check(beacon["sessionID"] as? String == directID && beacon["port"] as? Int == 12345, "direct discovery retains session and listener port")
+        check(beacon["password"] == nil && beacon["ssid"] == nil, "direct discovery never broadcasts hotspot credentials")
+        check(DirectConfiguration(["sessionID": directID, "ssid": "Other-network", "password": String(repeating: "a", count: 24)]) == nil, "reject arbitrary hotspot names")
+        check(DirectConfiguration(["sessionID": "invalid", "ssid": "Bridge-1234abcd", "password": String(repeating: "a", count: 24)]) == nil, "reject invalid direct session")
+        var timings = TransferTimings()
+        for (state, time) in [("Preparing", 1.0), ("Waiting for phone", 3.0), ("Sending", 5.0), ("Finishing", 15.0), ("Verifying", 16.0), ("Complete", 17.0)] { timings.transition(state, now: time) }
+        check(timings.total == 16 && timings.seconds["preparation"] == 2 && timings.seconds["transfer"] == 10 && timings.seconds["finish"] == 2, "transfer timings separate preparation, wait, transfer and finish")
+        timings.transition("Preparing", now: 20)
+        check(timings.total == nil && timings.seconds.isEmpty, "retry starts fresh timings")
         for value in ["123456", "password=example", "-----BEGIN PRIVATE KEY-----", "ghp_abcdefghijklmnopqrstuvwxyz", "4111 1111 1111 1111", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature"] {
             check(ClipboardProtection.reason(value) != nil, "likely secret detected")
         }
@@ -253,6 +266,24 @@ import Network
         check(identity.fingerprint == reloaded.fingerprint, "identity survives reload")
         check(TransferRules.validHash(identity.fingerprint), "certificate fingerprint format")
         check(sec_identity_create(identity.identity) != nil, "Network TLS identity usable")
+        let legacyDirectory: URL = try {
+            let legacy = try DeviceIdentity.importLegacyIdentity(Data(contentsOf: identityDirectory.appendingPathComponent("tls-identity-v1.p12")))
+            var legacyCertificate: SecCertificate?
+            check(SecIdentityCopyCertificate(legacy.0, &legacyCertificate) == errSecSuccess, "legacy private-keychain identity has a certificate")
+            let legacyHash = SHA256.hash(data: SecCertificateCopyData(legacyCertificate!) as Data).map { String(format: "%02x", $0) }.joined()
+            check(legacyHash == identity.fingerprint, "legacy import preserves pinned identity")
+            check(sec_identity_create(legacy.0) != nil, "legacy identity usable by Network TLS")
+            check(SecKeychainLock(legacy.1.keychain) == errSecSuccess, "simulate legacy keychain locking")
+            try legacy.1.unlock()
+            var key: SecKey?
+            check(SecIdentityCopyPrivateKey(legacy.0, &key) == errSecSuccess, "legacy key available after unlock")
+            let challenge = Data("Bridge compatibility regression".utf8)
+            let signature = SecKeyCreateSignature(key!, .rsaSignatureMessagePKCS1v15SHA256, challenge as CFData, nil)
+            check(signature != nil && SecKeyVerifySignature(SecCertificateCopyKey(legacyCertificate!)!, .rsaSignatureMessagePKCS1v15SHA256, challenge as CFData, signature!, nil), "legacy TLS key signs after lock and unlock")
+            return legacy.1.directory
+        }()
+        check(!FileManager.default.fileExists(atPath: legacyDirectory.path), "temporary legacy keychain cleaned up")
+        rejects("legacy import rejects corrupt identity") { _ = try DeviceIdentity.importLegacyIdentity(Data("invalid".utf8)) }
         check(!FileManager.default.fileExists(atPath: identityDirectory.appendingPathComponent("identity-key.pem").path), "temporary private key removed")
         let permissions = try FileManager.default.attributesOfItem(atPath: identityDirectory.appendingPathComponent("tls-identity-v1.p12").path)[.posixPermissions] as? NSNumber
         check(permissions?.intValue == 0o600, "private identity file permissions")

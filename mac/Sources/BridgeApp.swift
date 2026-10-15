@@ -8,6 +8,7 @@ struct BridgeApp: App {
     @Environment(\.openWindow) private var openWindow
     @NSApplicationDelegateAdaptor(BridgeApplicationDelegate.self) private var appDelegate
     @StateObject private var model: BridgeModel
+    @AppStorage(BridgeDownloads.completedKey) private var companionInstallCompleted = false
     init() {
         // usernoted can capture the sender icon on the first notification-center
         // lookup. Set it before BridgeModel queries settings or authorization,
@@ -34,34 +35,43 @@ struct BridgeApp: App {
                 .help("Bridge — \(model.status)")
                 .accessibilityLabel("Bridge, \(model.status)")
                 .onAppear {
-                    BridgeApplicationDelegate.openMainWindow = { openWindow(id: "bridge") }
-                    BridgeApplicationDelegate.openSettingsWindow = { openWindow(id: "settings") }
+                    BridgeApplicationDelegate.openMainWindow = { BridgeWindows.open("bridge", using: openWindow) }
+                    BridgeApplicationDelegate.openSettingsWindow = { BridgeWindows.open("settings", using: openWindow) }
+                    if !BridgeApplicationDelegate.setupPresentedThisLaunch && !companionInstallCompleted && model.paired == nil {
+                        BridgeApplicationDelegate.setupPresentedThisLaunch = true
+                        DispatchQueue.main.async { BridgeWindows.open("setup", using: openWindow) }
+                    }
                 }
         }.menuBarExtraStyle(.window)
-        Window("General", id: "settings") { BridgePreferences().environmentObject(model) }
-            .defaultSize(width: 860, height: 610).defaultLaunchBehavior(.suppressed)
-        Window("Developer tools", id: "developer") { DeveloperToolsView(bridgeConnected: model.connected) }.defaultSize(width: 900, height: 640).defaultLaunchBehavior(.suppressed)
-        Window("Bridge", id: "bridge") {
-            BridgeWindow().environmentObject(model)
-                .onAppear { BridgeApplicationDelegate.openMainWindow = { openWindow(id: "bridge") } }
-        }.defaultSize(width: 920, height: 680)
-        .defaultLaunchBehavior(.suppressed)
         .commands {
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { BridgeApplicationDelegate.showSettings() }.keyboardShortcut(",")
             }
         }
+        if #available(macOS 15.0, *) {
+            Window("Welcome to Bridge", id: "setup") { BridgeSetupWindow().environmentObject(model) }
+                .defaultSize(width: 520, height: 680).defaultLaunchBehavior(.suppressed)
+            Window("General", id: "settings") { BridgePreferences().environmentObject(model) }
+                .defaultSize(width: 860, height: 610).defaultLaunchBehavior(.suppressed)
+            Window("Developer tools", id: "developer") { DeveloperToolsView(bridgeConnected: model.connected) }.defaultSize(width: 900, height: 640).defaultLaunchBehavior(.suppressed)
+            Window("Bridge", id: "bridge") {
+                BridgeWindow().environmentObject(model)
+                    .onAppear { BridgeApplicationDelegate.openMainWindow = { BridgeWindows.open("bridge", using: openWindow) } }
+            }.defaultSize(width: 920, height: 680)
+            .defaultLaunchBehavior(.suppressed)
+        }
     }
 }
 
 struct BridgePopover: View {
+    @AppStorage(BridgeDownloads.completedKey) private var companionInstallCompleted = false
     @StateObject private var ui = PopoverUIState()
     @EnvironmentObject var model: BridgeModel
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
-                Image(systemName: "iphone.gen3").font(.title).foregroundStyle(.tint)
+                Image(bridgeSymbol: "iphone.gen3").font(.title).foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(model.paired?.name ?? "Bridge").font(.headline)
                     Label(model.status, systemImage: model.connected ? "checkmark.circle.fill" : "circle.dashed")
@@ -72,7 +82,7 @@ struct BridgePopover: View {
                     VStack(spacing: 3) {
                         HStack(spacing: 4) {
                             if model.batterySaver {
-                                Image(systemName: "leaf.fill").font(.system(size: 10)).foregroundStyle(.yellow)
+                                Image(bridgeSymbol: "leaf.fill").font(.system(size: 10)).foregroundStyle(.yellow)
                                     .help("Battery Saver is on").accessibilityLabel("Battery Saver on")
                             }
                             BridgeBatteryIcon(level: battery, charging: model.charging, saver: model.batterySaver)
@@ -93,9 +103,13 @@ struct BridgePopover: View {
                     HStack { Button("Decline", role: .cancel) { model.rejectPairing() }; Spacer(); Button("Pair") { model.confirmPairing() }.buttonStyle(.borderedProminent) }
                 }
             } else if model.paired == nil {
+                if !companionInstallCompleted {
+                    BridgeCompanionDownload(compact: true)
+                } else {
                 Text("Your Mac. Your Android. Together.").font(.headline)
                 Text("Open Bridge on your phone and scan this code to connect securely over Wi-Fi.").font(.callout).foregroundStyle(.secondary)
                 PairingView()
+                }
             } else {
                 Text("Quick actions").font(.headline)
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
@@ -122,7 +136,7 @@ struct BridgePopover: View {
                         HStack {
                             Text(item.name).font(.caption).lineLimit(1).truncationMode(.middle)
                             Spacer()
-                            Button { model.cancelTransfer(item.id) } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain).help("Cancel transfer")
+                            Button { model.cancelTransfer(item.id) } label: { Image(bridgeSymbol: "xmark.circle") }.buttonStyle(.plain).help("Cancel transfer")
                         }
                         if ["Sending", "Finishing"].contains(item.state) { ProgressView(value: item.progress); TransferMetricsCaption(item: item) }
                         else { Text(item.state).font(.caption).foregroundStyle(.secondary) }
@@ -132,7 +146,7 @@ struct BridgePopover: View {
             if !model.notice.isEmpty {
                 HStack(alignment: .top) {
                     Text(model.notice).font(.caption).foregroundStyle(.secondary).lineLimit(3)
-                    Spacer(); Button { model.notice = "" } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Dismiss message")
+                    Spacer(); Button { model.notice = "" } label: { Image(bridgeSymbol: "xmark") }.buttonStyle(.plain).accessibilityLabel("Dismiss message")
                 }
             }
             Divider()
@@ -162,7 +176,7 @@ struct BridgePopover: View {
     private func action(_ title: String, icon: String, perform: @escaping () -> Void) -> some View {
         Button(action: perform) {
             VStack(spacing: 10) {
-                Image(systemName: icon).font(.system(size: 22, weight: .medium)).foregroundStyle(.tint)
+                Image(bridgeSymbol: icon).font(.system(size: 22, weight: .medium)).foregroundStyle(.tint)
                 Text(title).font(.callout.weight(.medium)).lineLimit(2)
             }.frame(maxWidth: .infinity, minHeight: 76).padding(8)
                 .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 14))
@@ -187,7 +201,7 @@ struct BridgeBatteryIcon: View {
                     Spacer(minLength: 0)
                 }.frame(width: 22, height: 8).clipShape(RoundedRectangle(cornerRadius: 2.5, style: .continuous))
                 if charging {
-                    Image(systemName: "bolt.fill").font(.system(size: 8, weight: .bold)).foregroundStyle(Color.primary)
+                    Image(bridgeSymbol: "bolt.fill").font(.system(size: 8, weight: .bold)).foregroundStyle(Color.primary)
                         .shadow(color: Color(nsColor: .windowBackgroundColor), radius: 1)
                 }
             }.frame(width: 26, height: 12)
@@ -210,7 +224,7 @@ struct BridgeNotificationRow: View {
                 if showApp { BridgePhoneAppIcon(data: notification.appIconPNG); Text(notification.displayApp).font(.caption.weight(.medium)).lineLimit(1).help(notification.displayApp) }
                 Text(notification.date, style: .time).font(.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 8)
-                Button { model.dismissNotification(notification.id) } label: { Image(systemName: "xmark") }
+                Button { model.dismissNotification(notification.id) } label: { Image(bridgeSymbol: "xmark") }
                     .buttonStyle(.plain).help("Dismiss on phone").accessibilityLabel("Dismiss on phone").disabled(!model.connected)
             }
             Text(notification.title).font(.headline).lineLimit(2).fixedSize(horizontal: false, vertical: true)
@@ -269,9 +283,9 @@ struct BridgeNotificationReplyComposer: View {
                 }
             }
         }.padding(24).frame(width: 460)
-        .onChange(of: model.connected) { _, connected in if !connected { ui.text = ""; dismiss() } }
-        .onChange(of: model.notificationPreviews) { _, enabled in if !enabled { ui.text = ""; dismiss() } }
-        .onChange(of: model.mirrorNotifications) { _, enabled in if !enabled { ui.text = ""; dismiss() } }
+        .onChange(of: model.connected) { connected in if !connected { ui.text = ""; dismiss() } }
+        .onChange(of: model.notificationPreviews) { enabled in if !enabled { ui.text = ""; dismiss() } }
+        .onChange(of: model.mirrorNotifications) { enabled in if !enabled { ui.text = ""; dismiss() } }
     }
 }
 
@@ -345,7 +359,7 @@ struct BridgeWindow: View {
         mainWindow
         .onReceive(NotificationCenter.default.publisher(for: .bridgeShowSettings)) { _ in ui.selection = "settings" }
         .onReceive(NotificationCenter.default.publisher(for: .bridgeNavigate)) { event in ui.selection = event.userInfo?["selection"] as? String ?? "devices" }
-        .onChange(of: ui.settingsSearch) { _, _ in ui.selection = "settings" }
+        .onChange(of: ui.settingsSearch) { _ in ui.selection = "settings" }
         .onAppear { if activatesApplication { NSApp.setActivationPolicy(.accessory); NSApp.activate(ignoringOtherApps: true) } }
         .frame(minWidth: 720, minHeight: 580)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -362,11 +376,11 @@ struct BridgeWindow: View {
         NavigationSplitView {
             VStack(spacing: 8) {
                 HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    Image(bridgeSymbol: "magnifyingglass").foregroundStyle(.secondary)
                     TextField("Search settings", text: $ui.settingsSearch).textFieldStyle(.plain)
                         .accessibilityLabel("Search all Bridge settings")
                     if !ui.settingsSearch.isEmpty {
-                        Button { ui.settingsSearch = "" } label: { Image(systemName: "xmark.circle.fill") }
+                        Button { ui.settingsSearch = "" } label: { Image(bridgeSymbol: "xmark.circle.fill") }
                             .buttonStyle(.plain).accessibilityLabel("Clear settings search")
                     }
                 }.padding(9).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10)).padding(.horizontal, 10).padding(.top, 10)
@@ -400,15 +414,17 @@ struct BridgeWindow: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { model.chooseFile(); ui.selection = "transfers" } label: {
-                    Image(systemName: "arrow.up.doc").frame(width: 30, height: 30)
-                }.buttonStyle(.bordered).buttonBorderShape(.circle).help("Send files").disabled(!model.connected)
+                    Image(bridgeSymbol: "arrow.up.doc").frame(width: 30, height: 30)
+                }.buttonStyle(.bordered).bridgeCircularButtonBorder().help("Send files").disabled(!model.connected)
             }
-            ToolbarSpacer(.fixed, placement: .primaryAction)
+            if #available(macOS 26.0, *) {
+                ToolbarSpacer(.fixed, placement: .primaryAction)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button { ui.selection = "devices" } label: {
                     Circle().fill(model.connected ? Color.green : Color.secondary).frame(width: 10, height: 10)
                         .frame(width: 30, height: 30)
-                }.buttonStyle(.bordered).buttonBorderShape(.circle).help(model.status).accessibilityLabel(model.status)
+                }.buttonStyle(.bordered).bridgeCircularButtonBorder().help(model.status).accessibilityLabel(model.status)
             }
         }
         .frame(minWidth: 600, minHeight: 420)
@@ -423,7 +439,7 @@ struct BridgeWindow: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 HStack(spacing: 24) {
-                    Image(systemName: "iphone.gen3.radiowaves.left.and.right")
+                    Image(bridgeSymbol: "iphone.gen3.radiowaves.left.and.right")
                         .font(.system(size: 58, weight: .light)).foregroundStyle(.tint)
                         .frame(width: 110, height: 110)
                         .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 26))
@@ -475,7 +491,7 @@ struct BridgeWindow: View {
     private func dashboardAction(_ title: String, subtitle: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 12) {
-                Image(systemName: icon).font(.title2).foregroundStyle(.tint)
+                Image(bridgeSymbol: icon).font(.title2).foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title).font(.headline).foregroundStyle(.primary)
                     Text(subtitle).font(.caption).foregroundStyle(.secondary)
@@ -488,11 +504,11 @@ struct BridgeWindow: View {
     private func summaryCard(_ title: String, count: Int, icon: String, destination: String) -> some View {
         Button { ui.selection = destination } label: {
             HStack(spacing: 12) {
-                Image(systemName: icon).foregroundStyle(.tint)
+                Image(bridgeSymbol: icon).foregroundStyle(.tint)
                 Text(title).foregroundStyle(.primary)
                 Spacer()
                 Text("\(count)").monospacedDigit().foregroundStyle(.secondary)
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                Image(bridgeSymbol: "chevron.right").font(.caption).foregroundStyle(.tertiary)
             }.padding(18).background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 14))
         }.buttonStyle(.plain)
     }
@@ -559,7 +575,7 @@ struct BridgeSettings: View {
         ScrollView {
           VStack(alignment: .leading, spacing: 20) {
             if !search.isEmpty { VStack(alignment: .leading, spacing: 8) {
-                Image(systemName: "gearshape.fill").font(.largeTitle).foregroundStyle(.tint)
+                Image(bridgeSymbol: "gearshape.fill").font(.largeTitle).foregroundStyle(.tint)
                 Text(search.isEmpty ? "Make Bridge yours" : "Settings results").font(.title.bold()).padding(.leading, 256)
                 Text(search.isEmpty ? "Your devices, working together. Choose how Bridge fits your day." : "Matching “\(search)” across all settings.").foregroundStyle(.secondary).padding(.leading, 256)
             }.padding(.vertical, 12) }
@@ -571,7 +587,7 @@ struct BridgeSettings: View {
                 if !model.phoneOS.isEmpty { settingsValue("Android", value: model.phoneOS) }
                 if let free = model.phoneStorageFree { settingsValue("Phone storage free", value: ByteCountFormatter.string(fromByteCount: free, countStyle: .file)) }
                 settingsValue("Local address", value: "\(model.address):\(model.localPort)")
-                settingsToggle("Open Bridge at login", isOn: $ui.loginEnabled).onChange(of: ui.loginEnabled) { _, value in
+                settingsToggle("Open Bridge at login", isOn: $ui.loginEnabled).onChange(of: ui.loginEnabled) { value in
                     do { if value { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } }
                     catch { model.notice = error.localizedDescription; ui.loginEnabled = SMAppService.mainApp.status == .enabled }
                 }
@@ -615,7 +631,7 @@ struct BridgeSettings: View {
             } }
             if matches("Automations", "Enable automations saved rules add rule refresh Shortcuts allow notifications automation privacy limits when then rule enabled shortcut phone connected disconnected battery low file received clipboard notify") { settingsGroup("Automations", icon: "bolt") { BridgeAutomationView(automation: model.automation) } }
             if matches("Optional tools", "Optional tools Optional tools Developer tools… developer USB developer tools require separate authorization on your phone.") { settingsGroup("Optional tools", icon: "hammer") {
-                Button("Developer tools…") { openWindow(id: "developer") }.padding(.leading, 256)
+                Button("Developer tools…") { BridgeWindows.open("developer", using: openWindow) }.padding(.leading, 256)
                 Text("USB developer tools require separate authorization on your phone.").font(.caption).foregroundStyle(.secondary).padding(.leading, 256)
             } }
             if matches("About Bridge", "About Bridge About Bridge Version CFBundleShortVersionString 1.0 A private bridge between your Mac and Android. Your content travels directly over your local network.") { settingsGroup("About Bridge", icon: "info.circle") {
@@ -715,7 +731,7 @@ struct BridgeHandoffCard: View {
                 HStack {
                     Label("Continue from \(model.paired?.name ?? "Pixel")", systemImage: "safari").font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button { model.dismissHandoff() } label: { Image(systemName: "xmark") }
+                    Button { model.dismissHandoff() } label: { Image(bridgeSymbol: "xmark") }
                         .buttonStyle(.plain).help("Dismiss page").accessibilityLabel("Dismiss page")
                 }
                 Text(handoff.title).font(.headline).lineLimit(2)
@@ -735,6 +751,7 @@ extension Notification.Name {
 }
 
 @MainActor final class BridgeApplicationDelegate: NSObject, NSApplicationDelegate {
+    static var setupPresentedThisLaunch = false
     static var openMainWindow: (() -> Void)?
     static var openSettingsWindow: (() -> Void)?
     static weak var menuPanel: NSWindow?
@@ -765,11 +782,15 @@ extension Notification.Name {
 }
 
 struct BridgeOnboarding: View {
+    @AppStorage(BridgeDownloads.completedKey) private var companionInstallCompleted = false
     @EnvironmentObject var model: BridgeModel
     var body: some View {
+        if !companionInstallCompleted && model.pairingRequest == nil {
+            ScrollView { BridgeCompanionDownload().frame(maxWidth: .infinity) }
+        } else {
         ScrollView {
             VStack(spacing: 24) {
-                Image(systemName: "iphone.gen3.radiowaves.left.and.right")
+                Image(bridgeSymbol: "iphone.gen3.radiowaves.left.and.right")
                     .font(.system(size: 54, weight: .light)).foregroundStyle(.tint)
                     .frame(width: 112, height: 112)
                     .background(Color.accentColor.opacity(0.09), in: RoundedRectangle(cornerRadius: 28))
@@ -801,6 +822,7 @@ struct BridgeOnboarding: View {
                 if !model.notice.isEmpty { Text(model.notice).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
             }.padding(36).frame(maxWidth: .infinity)
         }.navigationTitle("Pair your phone")
+        }
     }
 }
 

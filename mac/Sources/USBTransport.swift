@@ -8,7 +8,7 @@ final class USBTransport {
     func start(port: UInt16) {
         timer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(deadline: .now(), repeating: 4)
+        timer.schedule(deadline: .now(), repeating: 4, leeway: .seconds(1))
         timer.setEventHandler { [weak self] in self?.refresh(port: port) }
         self.timer = timer; timer.resume()
     }

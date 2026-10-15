@@ -63,7 +63,7 @@ struct BridgeDeviceInformation: View {
                 HStack {
                     Label("Browse phone files", systemImage: "folder")
                     Spacer()
-                    Image(systemName: ui.showingFiles ? "chevron.down" : "chevron.right")
+                    Image(bridgeSymbol: ui.showingFiles ? "chevron.down" : "chevron.right")
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain).foregroundStyle(.tint).disabled(!model.connected)
             if ui.showingFiles {
@@ -87,7 +87,7 @@ struct BridgeDeviceInformation: View {
                 }.controlSize(.small).disabled(!model.connected || model.phoneFilesMessage == "Loading…")
                 ForEach(model.phoneFiles) { entry in
                     HStack {
-                        Image(systemName: entry.directory ? "folder.fill" : "doc").foregroundStyle(.tint)
+                        Image(bridgeSymbol: entry.directory ? "folder.fill" : "doc").foregroundStyle(.tint)
                         Text(entry.name).lineLimit(1).truncationMode(.middle)
                         Spacer()
                         if entry.directory {
@@ -101,7 +101,7 @@ struct BridgeDeviceInformation: View {
                 }
             }
         }.bridgeCard()
-        .onChange(of: model.connected) { _, connected in
+        .onChange(of: model.connected) { connected in
             if !connected { ui.showingFiles = false; ui.folders = [("", "Shared folder")] }
         }
     }
